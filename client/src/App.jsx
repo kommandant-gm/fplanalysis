@@ -3,6 +3,7 @@ import Dashboard from './pages/Dashboard';
 import Players from './pages/Players';
 import PlayerDetail from './pages/PlayerDetail';
 import Fixtures from './pages/Fixtures';
+import NewsSidebar from './components/NewsSidebar';
 
 const NAV = [
   { to: '/',           label: 'Overview'   },
@@ -12,31 +13,30 @@ const NAV = [
 
 export default function App() {
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Top nav */}
-      <header className="bg-white border-b border-gray-200 px-6 sticky top-0 z-10">
-        <div className="flex items-center justify-between h-14">
-
-          {/* Brand */}
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-[#37003c] flex items-center justify-center">
-              <span className="text-[#00ff85] text-xs font-black">FPL</span>
+    <div className="app-shell min-h-screen">
+      <header className="top-nav px-6 sticky top-0 z-20">
+        <div className="h-16 max-w-[1440px] mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 reveal-up reveal-fast">
+            <div className="brand-emblem">
+              <span className="text-[11px] font-extrabold tracking-tight">FPL</span>
             </div>
-            <span className="font-bold text-gray-900 text-sm tracking-tight">Analysis</span>
+            <div>
+              <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">AI Analysis</p>
+              <p className="font-bold text-slate-900 text-sm -mt-0.5">Future Vision Panel</p>
+            </div>
           </div>
 
-          {/* Nav tabs */}
-          <nav className="flex items-center gap-1">
+          <nav className="flex items-center gap-1.5 p-1 bg-white/80 border border-slate-200 rounded-xl shadow-[0_8px_20px_rgba(19,71,143,0.08)] reveal-up reveal-fast delay-1">
             {NAV.map(({ to, label }) => (
               <NavLink
                 key={to}
                 to={to}
                 end
                 className={({ isActive }) =>
-                  `text-sm px-4 py-2 rounded-lg font-medium transition-all ${
+                  `text-sm px-4 py-2 rounded-lg font-semibold transition-all duration-200 ${
                     isActive
-                      ? 'bg-[#37003c] text-[#00ff85]'
-                      : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+                      ? 'bg-gradient-to-r from-[#0a84ff] to-[#00c4ff] text-white shadow-[0_8px_18px_rgba(10,132,255,0.25)]'
+                      : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50'
                   }`
                 }
               >
@@ -45,20 +45,25 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Right slot */}
-          <div className="w-24" /> {/* spacer to balance brand */}
+          <div className="reveal-up reveal-fast delay-2">
+            <span className="hidden sm:inline-flex text-[11px] px-3 py-1.5 rounded-lg font-semibold futura-chip">
+              White Futuristic UI
+            </span>
+          </div>
         </div>
       </header>
 
-      {/* Page content */}
-      <main className="px-6 py-6">
-        <Routes>
-          <Route path="/"               element={<Dashboard />}    />
-          <Route path="/fixtures"       element={<Fixtures />}     />
-          <Route path="/players"        element={<Players />}      />
-          <Route path="/players/:id"    element={<PlayerDetail />} />
-        </Routes>
-      </main>
+      <div className="flex">
+        <NewsSidebar />
+        <main className="flex-1 min-w-0 px-4 sm:px-6 py-6">
+          <Routes>
+            <Route path="/"               element={<Dashboard />}    />
+            <Route path="/fixtures"       element={<Fixtures />}     />
+            <Route path="/players"        element={<Players />}      />
+            <Route path="/players/:id"    element={<PlayerDetail />} />
+          </Routes>
+        </main>
+      </div>
     </div>
   );
 }

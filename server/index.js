@@ -83,9 +83,10 @@ async function runMigrations() {
   console.log('[DB] Migrations complete');
 }
 
-const playersRoute = require('./routes/players');
+const playersRoute     = require('./routes/players');
 const predictionsRoute = require('./routes/predictions');
-const fixturesRoute = require('./routes/fixtures');
+const fixturesRoute    = require('./routes/fixtures');
+const newsRoute        = require('./routes/news');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -97,6 +98,7 @@ app.use(express.json());
 app.use('/api/players', playersRoute);
 app.use('/api/predictions', predictionsRoute);
 app.use('/api/fixtures', fixturesRoute);
+app.use('/api/news', newsRoute);
 
 // Health check
 app.get('/api/health', (_req, res) => {

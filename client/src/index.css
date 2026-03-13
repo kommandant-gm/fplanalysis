@@ -1,9 +1,248 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sora:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #f4f8fe;
+  --surface: #ffffff;
+  --text: #0b1220;
+  --muted: #5f7188;
+  --line: #e2ecf7;
+  --line-strong: #c5d8ee;
+  --accent: #0a84ff;
+  --accent-soft: #e8f3ff;
+  --accent-2: #00c4ff;
+  --good: #06b47f;
+  --neon: #00e5ff;
+}
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body, #root { min-height: 100%; }
+
 body {
-  background-color: #f6f7f8;
-  color: #1a1a1a;
-  font-family: 'Inter', sans-serif;
+  margin: 0;
+  color: var(--text);
+  font-family: 'Sora', 'Space Grotesk', sans-serif;
+  background:
+    radial-gradient(1100px 480px at -6% -12%, rgba(10, 132, 255, 0.08), transparent 62%),
+    radial-gradient(800px 420px at 108% -12%, rgba(0, 196, 255, 0.08), transparent 60%),
+    radial-gradient(600px 600px at 50% 100%, rgba(6, 180, 127, 0.04), transparent 70%),
+    linear-gradient(180deg, #f6fbff 0%, #f0f7ff 50%, #f5fafe 100%);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Grid pattern overlay ── */
+.app-shell {
+  position: relative;
+  isolation: isolate;
+}
+.app-shell::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(8, 49, 96, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(8, 49, 96, 0.028) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ── Nav ── */
+.top-nav {
+  backdrop-filter: blur(14px) saturate(1.6);
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,255,255,0.91));
+  border-bottom: 1px solid var(--line);
+}
+
+/* ── Brand ── */
+.brand-emblem {
+  width: 34px; height: 34px;
+  border-radius: 10px;
+  display: grid; place-items: center;
+  background: radial-gradient(65% 65% at 25% 20%, #69d2ff 0%, transparent 75%),
+              linear-gradient(140deg, #1f73ff 0%, #00bdf2 100%);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(10,132,255,0.30);
+}
+
+/* ── Panel ── */
+.futura-panel {
+  background: linear-gradient(170deg, rgba(255,255,255,1) 0%, rgba(248,253,255,0.97) 100%);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow:
+    0 1px 2px rgba(0,0,0,0.04),
+    0 8px 24px rgba(16,56,114,0.06),
+    inset 0 1px 0 rgba(255,255,255,0.9);
+  transition: box-shadow 0.3s ease, border-color 0.3s ease, transform 0.25s ease;
+}
+.futura-panel:hover {
+  border-color: var(--line-strong);
+  box-shadow:
+    0 2px 4px rgba(0,0,0,0.04),
+    0 16px 36px rgba(16,56,114,0.09),
+    inset 0 1px 0 rgba(255,255,255,1);
+  transform: translateY(-1px);
+}
+
+/* ── Button ── */
+.futura-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  border-radius: 12px;
+  border: 1px solid rgba(10,132,255,0.35);
+  background: linear-gradient(135deg, #0d7dff 0%, #00b8f0 100%);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(8,102,232,0.24), inset 0 1px 0 rgba(255,255,255,0.18);
+  transition: all 0.22s ease;
+  letter-spacing: 0.01em;
+}
+.futura-btn:hover:not(:disabled) {
+  filter: brightness(1.06) saturate(1.1);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(8,102,232,0.32), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.futura-btn:active:not(:disabled) { transform: translateY(0); }
+
+/* ── Chip ── */
+.futura-chip {
+  border: 1px solid #d8e9ff;
+  background: #f5faff;
+  color: #1f4e85;
+}
+
+/* ── Dot indicator (pulsing live dot) ── */
+.live-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--good);
+  box-shadow: 0 0 0 0 rgba(6,180,127,0.5);
+  animation: pulseDot 2.2s ease-in-out infinite;
+}
+
+/* ── Reveal animations ── */
+.reveal-up {
+  opacity: 0;
+  transform: translateY(14px) scale(0.994);
+  animation: revealUp 580ms cubic-bezier(.18,.82,.18,1) forwards;
+}
+.reveal-fast { animation-duration: 340ms; }
+
+.delay-1 { animation-delay: 55ms; }
+.delay-2 { animation-delay: 110ms; }
+.delay-3 { animation-delay: 165ms; }
+.delay-4 { animation-delay: 220ms; }
+.delay-5 { animation-delay: 275ms; }
+.delay-6 { animation-delay: 330ms; }
+
+/* ── Skeleton ── */
+.skeleton-shimmer {
+  background: linear-gradient(90deg, #edf4fb 15%, #f8fbff 48%, #edf4fb 75%);
+  background-size: 240% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 8px;
+}
+
+/* ── Glow bar sweep ── */
+.glow-line {
+  position: relative;
+  overflow: hidden;
+}
+.glow-line::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(105deg, transparent 0%, rgba(140,220,255,0.55) 50%, transparent 100%);
+  transform: translateX(-120%);
+  animation: sweep 3.8s ease-in-out infinite;
+}
+
+/* ── Probability bar segments ── */
+.prob-bar-home { background: linear-gradient(90deg, #f43f5e, #fb7185); }
+.prob-bar-draw { background: linear-gradient(90deg, #94a3b8, #cbd5e1); }
+.prob-bar-away { background: linear-gradient(90deg, #22d3ee, #06b6d4); }
+
+/* ── Score badge pop ── */
+.score-badge {
+  animation: badgePop 0.5s cubic-bezier(0.2,1.4,0.4,1) both;
+}
+
+/* ── Fixture card ── */
+.fixture-card {
+  background: linear-gradient(145deg, #ffffff 0%, #f8fbff 100%);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+.fixture-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 10px 30px rgba(10,132,255,0.08);
+  transform: translateY(-2px);
+}
+
+/* ── Leader row ── */
+.leader-row {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  transition: all 0.2s ease;
+}
+.leader-row:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 20px rgba(10,132,255,0.07);
+  transform: translateX(3px);
+}
+
+/* ── Section label ── */
+.section-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 800;
+  letter-spacing: 0.14em; text-transform: uppercase;
+}
+
+/* ── Keyframes ── */
+@keyframes revealUp {
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes sweep {
+  0%, 72%  { transform: translateX(-120%); opacity: 0; }
+  80%      { opacity: 1; }
+  100%     { transform: translateX(120%); opacity: 0; }
+}
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(6,180,127,0.5); }
+  50%      { box-shadow: 0 0 0 5px rgba(6,180,127,0); }
+}
+@keyframes badgePop {
+  0%   { transform: scale(0.7); opacity: 0; }
+  100% { transform: scale(1);   opacity: 1; }
+}
+@keyframes barGrow {
+  from { width: 0; }
+  to   { width: var(--bar-w, 0%); }
+}
+@keyframes countIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.count-in { animation: countIn 500ms ease forwards; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal-up, .glow-line::after, .skeleton-shimmer, .live-dot, .score-badge {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
 }
