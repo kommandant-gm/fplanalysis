@@ -142,6 +142,41 @@ async function runMigrations() {
     )`
   );
 
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS analytics_sessions (
+      session_id    VARCHAR(64) PRIMARY KEY,
+      first_seen    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen     DATETIME DEFAULT CURRENT_TIMESTAMP,
+      first_path    VARCHAR(255) DEFAULT NULL,
+      last_path     VARCHAR(255) DEFAULT NULL,
+      user_agent    VARCHAR(255) DEFAULT NULL,
+      last_referrer VARCHAR(255) DEFAULT NULL,
+      last_ip       VARCHAR(64) DEFAULT NULL,
+      visit_count   INT DEFAULT 0,
+      INDEX idx_last_seen (last_seen)
+    )`
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS analytics_pageviews (
+      id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+      session_id  VARCHAR(64) NOT NULL,
+      path        VARCHAR(255) NOT NULL,
+      title       VARCHAR(255) DEFAULT NULL,
+      referrer    VARCHAR(255) DEFAULT NULL,
+      user_agent  VARCHAR(255) DEFAULT NULL,
+      ip          VARCHAR(64) DEFAULT NULL,
+      viewport    VARCHAR(32) DEFAULT NULL,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_session_id (session_id),
+      INDEX idx_path (path),
+      INDEX idx_created_at (created_at),
+      CONSTRAINT fk_analytics_session
+        FOREIGN KEY (session_id) REFERENCES analytics_sessions(session_id)
+        ON DELETE CASCADE
+    )`
+  );
+
   console.log('[DB] Migrations complete');
 }
 
@@ -149,6 +184,7 @@ const playersRoute     = require('./routes/players');
 const predictionsRoute = require('./routes/predictions');
 const fixturesRoute    = require('./routes/fixtures');
 const newsRoute        = require('./routes/news');
+const analyticsRoute   = require('./routes/analytics');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -230,6 +266,7 @@ app.use('/api/players', apiCache, playersRoute);
 app.use('/api/predictions', apiCache, predictionsRoute);
 app.use('/api/fixtures', apiCache, fixturesRoute);
 app.use('/api/news', apiCache, newsRoute);
+app.use('/api/analytics', analyticsRoute);
 
 // Health check
 app.get('/api/health', (_req, res) => {

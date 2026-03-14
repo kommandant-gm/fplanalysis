@@ -43,19 +43,14 @@ function FDRBadge({ fdr }) {
   );
 }
 
-function AnimBar({ value, max = 100, accent = 'cyan', delay = 0 }) {
-  const [w, setW] = useState(0);
+function AnimBar({ value, max = 100, accent = 'cyan' }) {
   const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0;
   const a = ACCENTS[accent] || ACCENTS.cyan;
-  useEffect(() => {
-    const t = setTimeout(() => setW(pct), 120 + delay);
-    return () => clearTimeout(t);
-  }, [pct, delay]);
   return (
     <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
       <div
         className={`h-1.5 rounded-full bg-gradient-to-r ${a.bar} glow-line`}
-        style={{ width: `${w}%`, transition: 'width 900ms cubic-bezier(0.2,0.8,0.2,1)' }}
+        style={{ width: `${pct}%`, transition: 'width 400ms ease-out' }}
       />
     </div>
   );
@@ -534,6 +529,7 @@ function RotationRiskPanel({ rows, loading }) {
   const [positionFilter, setPositionFilter] = useState('ALL');
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [query, setQuery] = useState('');
+  const [visibleCount, setVisibleCount] = useState(60);
 
   const teams = useMemo(
     () => Array.from(new Set((rows || []).map(r => r.team).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
@@ -561,6 +557,15 @@ function RotationRiskPanel({ rows, loading }) {
       return haystack.includes(q);
     });
   }, [rows, teamFilter, positionFilter, riskFilter, query]);
+
+  useEffect(() => {
+    setVisibleCount(60);
+  }, [teamFilter, positionFilter, riskFilter, query, rows]);
+
+  const visibleRows = useMemo(
+    () => filteredRows.slice(0, visibleCount),
+    [filteredRows, visibleCount]
+  );
 
   const riskColor = (risk) => {
     if (risk >= 70) return 'bg-rose-100 text-rose-700 border border-rose-200';
@@ -622,10 +627,10 @@ function RotationRiskPanel({ rows, loading }) {
       ) : (
         <div className="p-3 space-y-2">
           <p className="text-[10px] text-slate-400 px-1">
-            Showing {filteredRows.length} of {rows.length} players
+            Showing {visibleRows.length} of {filteredRows.length} filtered ({rows.length} total)
           </p>
           <div className="max-h-[760px] overflow-y-auto pr-1 space-y-2">
-            {filteredRows.map((p, i) => (
+            {visibleRows.map((p, i) => (
               <article key={p.id} className="leader-row px-3 py-2.5 reveal-up" style={{ animationDelay: `${i * 45}ms` }}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -664,25 +669,35 @@ function RotationRiskPanel({ rows, loading }) {
                       <span>Start rate</span>
                       <span>{(toNum(p?.substitution_stats?.start_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.start_rate, 0) * 100} max={100} accent="green" delay={i * 35} />
+                    <AnimBar value={toNum(p?.substitution_stats?.start_rate, 0) * 100} max={100} accent="green" />
                   </div>
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
                       <span>Sub-on rate</span>
                       <span>{(toNum(p?.substitution_stats?.sub_on_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.sub_on_rate, 0) * 100} max={100} accent="cyan" delay={i * 35} />
+                    <AnimBar value={toNum(p?.substitution_stats?.sub_on_rate, 0) * 100} max={100} accent="cyan" />
                   </div>
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
                       <span>Cameo rate</span>
                       <span>{(toNum(p?.substitution_stats?.cameo_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.cameo_rate, 0) * 100} max={100} accent="amber" delay={i * 35} />
+                    <AnimBar value={toNum(p?.substitution_stats?.cameo_rate, 0) * 100} max={100} accent="amber" />
                   </div>
                 </div>
               </article>
             ))}
+            {visibleCount < filteredRows.length && (
+              <div className="pt-1">
+                <button
+                  onClick={() => setVisibleCount((v) => Math.min(v + 60, filteredRows.length))}
+                  className="w-full text-xs font-semibold rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600 hover:text-slate-800 hover:border-slate-300 transition-colors"
+                >
+                  Load more ({filteredRows.length - visibleCount} remaining)
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

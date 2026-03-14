@@ -4,7 +4,9 @@ import Players from './pages/Players';
 import PlayerDetail from './pages/PlayerDetail';
 import Fixtures from './pages/Fixtures';
 import ManualSync from './pages/ManualSync';
+import AnalyticsLive from './pages/AnalyticsLive';
 import NewsSidebar from './components/NewsSidebar';
+import AnalyticsTracker from './components/AnalyticsTracker';
 
 const NAV = [
   { to: '/',           label: 'Overview'   },
@@ -12,6 +14,7 @@ const NAV = [
   { to: '/players',    label: 'Players'    },
 ];
 const PRIVATE_SYNC_ROUTE = '/__sync-fpl-47a9';
+const PRIVATE_ANALYTICS_ROUTE = '/__traffic-live-88a2';
 
 export default function App() {
   return (
@@ -59,12 +62,14 @@ export default function App() {
       <div className="flex">
         <NewsSidebar />
         <main className="flex-1 min-w-0 px-4 sm:px-6 py-6">
+          <AnalyticsTracker />
           <Routes>
             <Route path="/"               element={<Dashboard />}    />
             <Route path="/fixtures"       element={<Fixtures />}     />
             <Route path="/players"        element={<Players />}      />
             <Route path="/players/:id"    element={<PlayerDetail />} />
             <Route path={PRIVATE_SYNC_ROUTE} element={<ManualSync />} />
+            <Route path={PRIVATE_ANALYTICS_ROUTE} element={<AnalyticsLive />} />
           </Routes>
         </main>
       </div>
