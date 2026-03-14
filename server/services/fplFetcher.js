@@ -362,7 +362,7 @@ async function fetchPlayerHistoryWithRetry(playerId, attempts = 3) {
 }
 
 async function ensurePredictionModelColumns() {
-  const dbName = process.env.DB_NAME || 'fpl_analysis';
+  const dbName = process.env.DB_NAME || process.env.MYSQLDATABASE || 'fpl_analysis';
   const [cols] = await db.execute(
     `SELECT COLUMN_NAME
      FROM INFORMATION_SCHEMA.COLUMNS
