@@ -43,8 +43,84 @@ function ChancePill({ value }) {
   );
 }
 
+function SidebarPanel({ injuries, feed, loading, tab, setTab, lastUpdate, onRefresh, onClose }) {
+  return (
+    <>
+      {/* Header */}
+      <div className="px-3.5 py-3 border-b border-slate-100 flex-shrink-0">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex items-start gap-2">
+            <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+              style={{ background: 'linear-gradient(135deg,#0d7dff,#00b8f0)' }}>
+              <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round"
+                  d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z" />
+              </svg>
+            </div>
+            <div className="min-w-0">
+              <span className="text-xs font-black text-slate-800">FPL News</span>
+              {lastUpdate && (
+                <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
+                  Updated {timeAgo(lastUpdate)}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={onRefresh} title="Refresh"
+              className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round"
+                  d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+            </button>
+            <button onClick={onClose} title="Collapse"
+              className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-0.5 px-3 py-2 border-b border-slate-100 flex-shrink-0">
+        {[
+          { key: 'injuries', label: `Injuries (${injuries.length})` },
+          { key: 'news',     label: `News (${feed.length})` },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`flex-1 text-[10px] font-bold py-1.5 rounded-lg transition-all ${
+              tab === t.key
+                ? 'bg-gradient-to-r from-sky-500 to-cyan-400 text-white shadow-sm'
+                : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
+            }`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto">
+        {loading ? (
+          <div className="p-3 space-y-2">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="skeleton-shimmer" style={{ height: 56, borderRadius: 12 }} />
+            ))}
+          </div>
+        ) : tab === 'injuries' ? (
+          <InjuriesTab injuries={injuries} />
+        ) : (
+          <NewsTab feed={feed} />
+        )}
+      </div>
+    </>
+  );
+}
+
 export default function NewsSidebar() {
-  const [open,       setOpen]       = useState(true);
+  const [open,       setOpen]       = useState(() => (typeof window !== 'undefined' ? window.innerWidth >= 1024 : true));
   const [injuries,   setInjuries]   = useState([]);
   const [feed,       setFeed]       = useState([]);
   const [loading,    setLoading]    = useState(true);
@@ -85,6 +161,27 @@ export default function NewsSidebar() {
         </svg>
       </button>
 
+      {/* Mobile panel */}
+      {open && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 bg-slate-900/35" onClick={() => setOpen(false)} />
+          <aside className="absolute inset-y-0 right-0 w-[88vw] max-w-[340px] border-l border-slate-200 bg-white shadow-2xl">
+            <div className="flex flex-col h-full overflow-hidden">
+              <SidebarPanel
+                injuries={injuries}
+                feed={feed}
+                loading={loading}
+                tab={tab}
+                setTab={setTab}
+                lastUpdate={lastUpdate}
+                onRefresh={fetchNews}
+                onClose={() => setOpen(false)}
+              />
+            </div>
+          </aside>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside
         className={`
@@ -112,75 +209,16 @@ export default function NewsSidebar() {
         {/* Full sidebar content */}
         {open && (
           <div className="flex flex-col h-full w-72 overflow-hidden">
-            {/* Header */}
-            <div className="px-3.5 py-3 border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex items-start gap-2">
-                  <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
-                    style={{ background: 'linear-gradient(135deg,#0d7dff,#00b8f0)' }}>
-                    <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round"
-                        d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z" />
-                    </svg>
-                  </div>
-                  <div className="min-w-0">
-                    <span className="text-xs font-black text-slate-800">FPL News</span>
-                    {lastUpdate && (
-                      <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
-                        Updated {timeAgo(lastUpdate)}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <button onClick={fetchNews} title="Refresh"
-                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round"
-                        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-                    </svg>
-                  </button>
-                  <button onClick={() => setOpen(false)} title="Collapse"
-                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Tabs */}
-            <div className="flex items-center gap-0.5 px-3 py-2 border-b border-slate-100 flex-shrink-0">
-              {[
-                { key: 'injuries', label: `Injuries (${injuries.length})` },
-                { key: 'news',     label: `News (${feed.length})` },
-              ].map(t => (
-                <button key={t.key} onClick={() => setTab(t.key)}
-                  className={`flex-1 text-[10px] font-bold py-1.5 rounded-lg transition-all ${
-                    tab === t.key
-                      ? 'bg-gradient-to-r from-sky-500 to-cyan-400 text-white shadow-sm'
-                      : 'text-slate-500 hover:text-slate-700 hover:bg-slate-50'
-                  }`}>
-                  {t.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Content */}
-            <div className="flex-1 overflow-y-auto">
-              {loading ? (
-                <div className="p-3 space-y-2">
-                  {[...Array(6)].map((_, i) => (
-                    <div key={i} className="skeleton-shimmer" style={{ height: 56, borderRadius: 12 }} />
-                  ))}
-                </div>
-              ) : tab === 'injuries' ? (
-                <InjuriesTab injuries={injuries} />
-              ) : (
-                <NewsTab feed={feed} />
-              )}
-            </div>
+            <SidebarPanel
+              injuries={injuries}
+              feed={feed}
+              loading={loading}
+              tab={tab}
+              setTab={setTab}
+              lastUpdate={lastUpdate}
+              onRefresh={fetchNews}
+              onClose={() => setOpen(false)}
+            />
           </div>
         )}
       </aside>
