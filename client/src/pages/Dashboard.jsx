@@ -75,7 +75,6 @@ function SectionTag({ label, accent = 'cyan' }) {
   const a = ACCENTS[accent] || ACCENTS.cyan;
   return (
     <div className={`section-label ${a.chip} rounded-md px-2 py-1 border`}>
-      <span className="live-dot" style={{ background: a.dot, boxShadow: `0 0 0 0 ${a.dot}33` }} />
       {label}
     </div>
   );
@@ -113,7 +112,6 @@ function FixtureProbPanel({ gameweek, fixtures, loading }) {
     <section className="futura-panel reveal-up overflow-hidden">
       <div className="h-[3px] w-full bg-gradient-to-r from-cyan-400 via-sky-500 to-blue-500" />
       <header className="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center gap-3">
-        <span className="live-dot" />
         <span className="section-label text-[10px] text-sky-700 font-black tracking-[0.14em] uppercase">
           Fixture Win Probabilities
         </span>
@@ -946,7 +944,6 @@ export default function Dashboard() {
   const [insightsLoading, setInsightsLoading] = useState(true);
 
   const [error,    setError]    = useState(null);
-  const [syncing,  setSyncing]  = useState(false);
   const [gameweek, setGameweek] = useState(null);
   const [syncTick, setSyncTick] = useState(0);
 
@@ -1011,18 +1008,6 @@ export default function Dashboard() {
     return () => { active = false; };
   }, [syncTick]);
 
-  const syncData = async () => {
-    setSyncing(true);
-    try {
-      await axios.post('/api/sync');
-      setSyncTick(t => t + 1);
-    } catch (e) {
-      setError(`Sync failed: ${e.message}`);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const xptsRows = useMemo(() =>
     [...players].sort((a, b) => toNum(b.xpts, 0) - toNum(a.xpts, 0)).slice(0, 8)
       .map(p => ({ id: p.id, name: p.name, team: p.team, position: p.position, value: toNum(p.xpts, 0) })),
@@ -1069,13 +1054,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <button onClick={syncData} disabled={syncing} className="futura-btn text-sm px-5 py-2.5 rounded-xl disabled:opacity-50">
-            <svg className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-            </svg>
-            {syncing ? 'Syncing…' : 'Sync FPL Data'}
-          </button>
         </div>
 
       </section>
