@@ -2,8 +2,9 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
-const { syncFPLData } = require('./services/fplFetcher');
+const { syncFPLData, syncAvailabilityData } = require('./services/fplFetcher');
 const db = require('./config/db');
+const { createResponseCache } = require('./middleware/responseCache');
 
 // Add new columns to existing tables without requiring a full DB reset
 async function runMigrations() {
@@ -90,15 +91,62 @@ const newsRoute        = require('./routes/news');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const apiCache = createResponseCache(
+  parseInt(process.env.API_CACHE_TTL_MS, 10) || 45_000,
+  parseInt(process.env.API_CACHE_MAX_ENTRIES, 10) || 900
+);
+const cronOptions = process.env.CRON_TIMEZONE
+  ? { timezone: process.env.CRON_TIMEZONE }
+  : undefined;
+
+const syncState = {
+  running: false,
+  mode: null,
+  startedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+};
+
+async function runSync(mode = 'full') {
+  if (syncState.running) {
+    return {
+      skipped: true,
+      message: `Sync already running (${syncState.mode})`,
+      state: { ...syncState },
+    };
+  }
+
+  syncState.running = true;
+  syncState.mode = mode;
+  syncState.startedAt = new Date().toISOString();
+
+  try {
+    if (mode === 'light') await syncAvailabilityData();
+    else await syncFPLData();
+
+    apiCache.clear();
+    syncState.lastError = null;
+
+    return { skipped: false, message: `${mode} sync completed` };
+  } catch (err) {
+    syncState.lastError = err.message;
+    throw err;
+  } finally {
+    syncState.running = false;
+    syncState.mode = null;
+    syncState.startedAt = null;
+    syncState.lastFinishedAt = new Date().toISOString();
+  }
+}
 
 app.use(cors());
 app.use(express.json());
 
 // Routes
-app.use('/api/players', playersRoute);
-app.use('/api/predictions', predictionsRoute);
-app.use('/api/fixtures', fixturesRoute);
-app.use('/api/news', newsRoute);
+app.use('/api/players', apiCache, playersRoute);
+app.use('/api/predictions', apiCache, predictionsRoute);
+app.use('/api/fixtures', apiCache, fixturesRoute);
+app.use('/api/news', apiCache, newsRoute);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -108,17 +156,53 @@ app.get('/api/health', (_req, res) => {
 // Manual sync trigger
 app.post('/api/sync', async (_req, res) => {
   try {
-    await syncFPLData();
-    res.json({ success: true, message: 'FPL data synced successfully' });
+    const result = await runSync('full');
+    if (result.skipped) return res.status(409).json({ success: false, ...result });
+    res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// Weekly cron: every Thursday at 8am (after FPL updates)
-cron.schedule('0 8 * * 4', async () => {
-  console.log('[CRON] Running weekly FPL data sync...');
-  await syncFPLData();
+// Lightweight sync: every 15 minutes (injury/news + core FPL fields).
+cron.schedule('*/15 * * * *', async () => {
+  try {
+    console.log('[CRON] Running 15-minute lightweight sync...');
+    const result = await runSync('light');
+    if (result.skipped) console.log(`[CRON] Skipped light sync: ${result.message}`);
+  } catch (err) {
+    console.error('[CRON] Lightweight sync failed:', err.message);
+  }
+}, cronOptions);
+
+// Full sync: every 3 hours at minute 10.
+cron.schedule('10 */3 * * *', async () => {
+  try {
+    console.log('[CRON] Running 3-hour full sync...');
+    const result = await runSync('full');
+    if (result.skipped) console.log(`[CRON] Skipped full sync: ${result.message}`);
+  } catch (err) {
+    console.error('[CRON] Full sync failed:', err.message);
+  }
+}, cronOptions);
+
+app.post('/api/sync/light', async (_req, res) => {
+  try {
+    const result = await runSync('light');
+    if (result.skipped) return res.status(409).json({ success: false, ...result });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/sync/status', (_req, res) => {
+  res.json({
+    success: true,
+    sync: syncState,
+    cache: apiCache.stats(),
+    serverTime: new Date().toISOString(),
+  });
 });
 
 runMigrations().then(() => {

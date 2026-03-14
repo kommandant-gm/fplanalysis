@@ -1,10 +1,10 @@
 const axios = require('axios');
 const db = require('../config/db');
 const { syncFotMobData } = require('./fotmobScraper');
+const { buildMinutesRotationProfile } = require('./minutesRotationModel');
 
 const FPL_BASE = 'https://fantasy.premierleague.com/api';
-const HISTORY_PLAYER_LIMIT = 200;
-const HISTORY_WINDOW = 8;
+const HISTORY_WINDOW = 38;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -40,6 +40,114 @@ function weightedBlend(parts, fallback = 0) {
   const weightTotal = valid.reduce((sum, p) => sum + p.weight, 0);
   if (!weightTotal) return fallback;
   return valid.reduce((sum, p) => sum + (p.value * p.weight), 0) / weightTotal;
+}
+
+function poissonPMF(lambda, k) {
+  if (!Number.isFinite(lambda) || lambda < 0 || k < 0) return 0;
+  let factorial = 1;
+  for (let i = 2; i <= k; i++) factorial *= i;
+  return (Math.exp(-lambda) * (lambda ** k)) / factorial;
+}
+
+// Dixon-Coles low-score correction term.
+function dixonColesTau(homeGoals, awayGoals, lambdaHome, lambdaAway, rho) {
+  if (homeGoals === 0 && awayGoals === 0) {
+    return Math.max(0.25, 1 - (lambdaHome * lambdaAway * rho));
+  }
+  if (homeGoals === 0 && awayGoals === 1) {
+    return Math.max(0.25, 1 + (lambdaHome * rho));
+  }
+  if (homeGoals === 1 && awayGoals === 0) {
+    return Math.max(0.25, 1 + (lambdaAway * rho));
+  }
+  if (homeGoals === 1 && awayGoals === 1) {
+    return Math.max(0.25, 1 - rho);
+  }
+  return 1;
+}
+
+function buildDixonColesScoreMatrix(lambdaHome, lambdaAway, rho = -0.08, maxGoals = 7) {
+  const matrix = [];
+  let total = 0;
+
+  for (let h = 0; h <= maxGoals; h++) {
+    matrix[h] = [];
+    const pH = poissonPMF(lambdaHome, h);
+    for (let a = 0; a <= maxGoals; a++) {
+      const pA = poissonPMF(lambdaAway, a);
+      const tau = dixonColesTau(h, a, lambdaHome, lambdaAway, rho);
+      const p = pH * pA * tau;
+      matrix[h][a] = p;
+      total += p;
+    }
+  }
+
+  if (total <= 0) return matrix;
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      matrix[h][a] = matrix[h][a] / total;
+    }
+  }
+  return matrix;
+}
+
+function extractTeamGoalDistribution(scoreMatrix, side = 'home') {
+  if (!Array.isArray(scoreMatrix) || !scoreMatrix.length) return [];
+  const maxGoals = scoreMatrix.length - 1;
+  const dist = Array(maxGoals + 1).fill(0);
+
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      const p = toNum(scoreMatrix[h]?.[a], 0);
+      if (side === 'home') dist[h] += p;
+      else dist[a] += p;
+    }
+  }
+
+  const total = dist.reduce((s, p) => s + p, 0);
+  if (total <= 0) return dist;
+  return dist.map(p => p / total);
+}
+
+function playerGoalProbFromTeamDistribution(teamGoalDist = [], playerShare = 0) {
+  const share = clamp(playerShare, 0, 0.92);
+  if (!teamGoalDist.length || share <= 0) return 0;
+
+  let prob = 0;
+  for (let goals = 0; goals < teamGoalDist.length; goals++) {
+    const pGoals = toNum(teamGoalDist[goals], 0);
+    if (pGoals <= 0) continue;
+    // Given team scores k goals, approximate player's chance of >=1 goal by share allocation.
+    const pPlayerScores = 1 - ((1 - share) ** goals);
+    prob += pGoals * pPlayerScores;
+  }
+  return clamp(prob, 0, 0.99);
+}
+
+function expectedConcedeDeduction(oppGoalDist = [], minsProb = 1) {
+  if (!Array.isArray(oppGoalDist) || !oppGoalDist.length) return 0;
+  const minutesWeight = clamp(toNum(minsProb, 0), 0, 1);
+  let expectedBlocks = 0;
+  for (let goals = 0; goals < oppGoalDist.length; goals++) {
+    const pGoals = toNum(oppGoalDist[goals], 0);
+    if (pGoals <= 0) continue;
+    expectedBlocks += Math.floor(goals / 2) * pGoals;
+  }
+  return expectedBlocks * minutesWeight;
+}
+
+function expectedAppearancePoints(minsProb = 0, startRate = 0, avgMinutes = null) {
+  const pPlay = clamp(toNum(minsProb, 0), 0, 1);
+  if (pPlay <= 0) return 0;
+
+  const start = clamp(toNum(startRate, 0), 0, 1);
+  const avg = avgMinutes != null ? clamp(toNum(avgMinutes, 0), 0, 90) : null;
+  const sixtyFromAvg = avg != null ? clamp((avg - 15) / 75, 0, 1) : start;
+  const pSixtyGivenPlay = clamp((start * 0.7) + (sixtyFromAvg * 0.3), 0, 1);
+  const pSixty = clamp(pPlay * pSixtyGivenPlay, 0, pPlay);
+
+  // FPL appearance scoring: +1 for appearance, +1 more for 60+ mins.
+  return pPlay + pSixty;
 }
 
 function parseMaybeJson(raw, fallback = null) {
@@ -153,6 +261,84 @@ async function fetchFixtures() {
   return res.data;
 }
 
+// Lightweight sync for injury/news + core FPL fields only.
+// Designed for frequent runs (e.g. every 15 minutes).
+async function syncAvailabilityData() {
+  console.log('[FPL] Starting lightweight availability sync...');
+  await ensurePredictionModelColumns();
+
+  const bootstrap = await fetchBootstrap();
+  const teams = bootstrap?.teams || [];
+  const elements = bootstrap?.elements || [];
+
+  for (const team of teams) {
+    await db.execute(
+      `INSERT INTO teams (id, name, short_name) VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), short_name=VALUES(short_name)`,
+      [team.id, team.name, team.short_name]
+    );
+  }
+
+  const [existingRows] = await db.execute('SELECT id FROM players');
+  const existingPlayerIds = new Set(
+    existingRows.map((r) => toNum(r.id, 0)).filter(Boolean)
+  );
+
+  let updated = 0;
+  for (const p of elements) {
+    if (!existingPlayerIds.has(toNum(p.id, 0))) continue;
+
+    await db.execute(
+      `UPDATE players
+       SET
+         name=?,
+         team_id=?,
+         position=?,
+         price=?,
+         total_points=?,
+         form=?,
+         minutes=?,
+         goals_scored=?,
+         assists=?,
+         clean_sheets=?,
+         selected_by_percent=?,
+         status=?,
+         chance_of_playing_next_round=?,
+         chance_of_playing_this_round=?,
+         news=?,
+         penalties_order=?,
+         direct_freekicks_order=?,
+         corners_and_indirect_freekicks_order=?
+       WHERE id=?`,
+      [
+        `${p.first_name} ${p.second_name}`,
+        p.team,
+        p.element_type,
+        p.now_cost / 10,
+        toNum(p.total_points, 0),
+        toNum(p.form, 0),
+        toNum(p.minutes, 0),
+        toNum(p.goals_scored, 0),
+        toNum(p.assists, 0),
+        toNum(p.clean_sheets, 0),
+        toNum(p.selected_by_pct, 0),
+        p.status || 'a',
+        p.chance_of_playing_next_round != null ? toNum(p.chance_of_playing_next_round, 100) : null,
+        p.chance_of_playing_this_round != null ? toNum(p.chance_of_playing_this_round, 100) : null,
+        p.news || null,
+        p.penalties_order != null ? toNum(p.penalties_order, 0) : null,
+        p.direct_freekicks_order != null ? toNum(p.direct_freekicks_order, 0) : null,
+        p.corners_and_indirect_freekicks_order != null ? toNum(p.corners_and_indirect_freekicks_order, 0) : null,
+        p.id,
+      ]
+    );
+    updated++;
+  }
+
+  console.log(`[FPL] Lightweight availability sync complete. Updated players: ${updated}`);
+  return { updated };
+}
+
 // Fetch individual player history
 async function fetchPlayerHistory(playerId) {
   const res = await axios.get(`${FPL_BASE}/element-summary/${playerId}/`, {
@@ -208,7 +394,7 @@ async function ensurePredictionModelColumns() {
 }
 
 async function syncPlayerGameweekHistory(players, currentGW) {
-  const tracked = players.slice(0, HISTORY_PLAYER_LIMIT);
+  const tracked = Array.isArray(players) ? players : [];
   const batchSize = 4;
   let done = 0;
   let rowsUpserted = 0;
@@ -309,7 +495,9 @@ function getHistoryFeatures(rows) {
       sample: 0,
       avgPoints3: 0,
       avgPoints6: 0,
+      seasonAvgPoints: 0,
       minutesRatio: 0.7,
+      seasonMinutesRatio: 0.7,
       goals90: null,
       assists90: null,
       xg90: null,
@@ -317,6 +505,7 @@ function getHistoryFeatures(rows) {
       csRate: null,
       scoreRate3: null,
       scoreRate6: null,
+      seasonScoreRate: null,
       goalsLast3: 0,
       goalsLast6: 0,
       blankStreak: 0,
@@ -326,8 +515,14 @@ function getHistoryFeatures(rows) {
     };
   }
 
-  const recent = rows.slice(0, 6);
+  const season = rows.slice(0, Math.max(HISTORY_WINDOW, 10));
+  const recent = season.slice(0, 6);
   const recent3 = recent.slice(0, 3);
+  const seasonPoints = season.map(r => toNum(r.total_points, 0));
+  const seasonMinutes = season.map(r => toNum(r.minutes, 0));
+  const seasonScoreFlags = season.map(r => (toNum(r.goals_scored, 0) > 0 ? 1 : 0));
+  const seasonAvgPoints = seasonPoints.length ? mean(seasonPoints) : 0;
+  const seasonMinutesRatio = seasonMinutes.length ? clamp(mean(seasonMinutes) / 90, 0, 1) : 0.7;
   const points = recent.map(r => toNum(r.total_points, 0));
   const minutes = recent.map(r => toNum(r.minutes, 0));
   const totalMinutes = minutes.reduce((s, m) => s + m, 0);
@@ -345,14 +540,17 @@ function getHistoryFeatures(rows) {
     blankStreak++;
   }
 
-  const avgPoints6 = mean(points);
+  const avgPoints6 = points.length ? mean(points) : seasonAvgPoints;
   const avgPoints3 = mean(recent3.map(r => toNum(r.total_points, 0)));
+  const recentBias = avgPoints3 - seasonAvgPoints;
 
   return {
-    sample: recent.length,
+    sample: season.length,
     avgPoints3,
     avgPoints6,
-    minutesRatio: clamp(mean(minutes) / 90, 0.2, 1),
+    seasonAvgPoints,
+    minutesRatio: clamp(mean(minutes) / 90, 0, 1),
+    seasonMinutesRatio,
     goals90: totalMinutes > 0 ? (totalGoals / totalMinutes) * 90 : null,
     assists90: totalMinutes > 0 ? (totalAssists / totalMinutes) * 90 : null,
     xg90: totalMinutes > 0 ? (totalXg / totalMinutes) * 90 : null,
@@ -360,11 +558,12 @@ function getHistoryFeatures(rows) {
     csRate: recent.length > 0 ? cleanSheets / recent.length : null,
     scoreRate3: scoreFlags3.length ? mean(scoreFlags3) : null,
     scoreRate6: scoreFlags6.length ? mean(scoreFlags6) : null,
+    seasonScoreRate: seasonScoreFlags.length ? mean(seasonScoreFlags) : null,
     goalsLast3: totalGoals3,
     goalsLast6: totalGoals,
     blankStreak,
     lastMatchScored: toNum(recent[0]?.goals_scored, 0) > 0,
-    trend: avgPoints3 - avgPoints6,
+    trend: (avgPoints3 - avgPoints6) * 0.7 + (recentBias * 0.3),
     volatility: stdDev(points) || 1.3,
   };
 }
@@ -419,7 +618,7 @@ function getOpponentHistoryFeatures(rows, opponentTeamId, upcomingWasHome = null
     return {
       sample: matches.length,
       avgPoints: avgPoints != null ? avgPoints : mean(points),
-      minutesRatio: clamp(((avgMinutes != null ? avgMinutes : mean(minutes)) / 90), 0.2, 1),
+      minutesRatio: clamp(((avgMinutes != null ? avgMinutes : mean(minutes)) / 90), 0, 1),
       goals90: totalMinutes > 0 ? (totalGoals / totalMinutes) * 90 : null,
       scoreRate: scoreRate != null ? clamp(scoreRate, 0, 1) : null,
       xg90: totalMinutes > 0 ? (totalXg / totalMinutes) * 90 : null,
@@ -509,6 +708,173 @@ function getOpponentHistoryFeatures(rows, opponentTeamId, upcomingWasHome = null
   };
 }
 
+async function buildFixtureGoalModels(fixtures = []) {
+  const byTeamGw = {};
+  if (!fixtures.length) return byTeamGw;
+
+  const [historyRows] = await db.execute(
+    `SELECT team_home_id, team_away_id, score_home, score_away
+     FROM fixtures
+     WHERE finished = 1
+       AND score_home IS NOT NULL
+       AND score_away IS NOT NULL
+     ORDER BY gameweek DESC
+     LIMIT 760`
+  );
+
+  const defaultLeagueHome = 1.45;
+  const defaultLeagueAway = 1.22;
+  const played = historyRows.filter(
+    r => toNum(r.team_home_id, 0) > 0 && toNum(r.team_away_id, 0) > 0
+  );
+
+  const leagueHomeAvg = played.length
+    ? mean(played.map(r => toNum(r.score_home, 0)))
+    : defaultLeagueHome;
+  const leagueAwayAvg = played.length
+    ? mean(played.map(r => toNum(r.score_away, 0)))
+    : defaultLeagueAway;
+  const leagueOverallAvg = (leagueHomeAvg + leagueAwayAvg) / 2;
+
+  const teamStats = {};
+  const ensureTeam = (teamId) => {
+    if (!teamStats[teamId]) {
+      teamStats[teamId] = {
+        homeFor: [],
+        homeAgainst: [],
+        awayFor: [],
+        awayAgainst: [],
+        allFor: [],
+        allAgainst: [],
+      };
+    }
+    return teamStats[teamId];
+  };
+
+  for (const row of played) {
+    const homeId = toNum(row.team_home_id, 0);
+    const awayId = toNum(row.team_away_id, 0);
+    const homeGoals = toNum(row.score_home, 0);
+    const awayGoals = toNum(row.score_away, 0);
+
+    const homeStats = ensureTeam(homeId);
+    const awayStats = ensureTeam(awayId);
+
+    homeStats.homeFor.push(homeGoals);
+    homeStats.homeAgainst.push(awayGoals);
+    homeStats.allFor.push(homeGoals);
+    homeStats.allAgainst.push(awayGoals);
+
+    awayStats.awayFor.push(awayGoals);
+    awayStats.awayAgainst.push(homeGoals);
+    awayStats.allFor.push(awayGoals);
+    awayStats.allAgainst.push(homeGoals);
+  }
+
+  const shrinkToOne = (value, sample, cap = 14) => {
+    if (!Number.isFinite(value) || value <= 0) return 1;
+    const w = clamp(sample / cap, 0, 1);
+    return 1 + ((value - 1) * w);
+  };
+
+  const strengths = {};
+  const defaultStrength = {
+    homeAttack: 1,
+    awayAttack: 1,
+    homeDefenseWeak: 1,
+    awayDefenseWeak: 1,
+  };
+
+  for (const [teamId, stats] of Object.entries(teamStats)) {
+    const homeForAvg = stats.homeFor.length ? mean(stats.homeFor) : null;
+    const homeAgainstAvg = stats.homeAgainst.length ? mean(stats.homeAgainst) : null;
+    const awayForAvg = stats.awayFor.length ? mean(stats.awayFor) : null;
+    const awayAgainstAvg = stats.awayAgainst.length ? mean(stats.awayAgainst) : null;
+    const allForAvg = stats.allFor.length ? mean(stats.allFor) : leagueOverallAvg;
+    const allAgainstAvg = stats.allAgainst.length ? mean(stats.allAgainst) : leagueOverallAvg;
+
+    const homeAttackRaw = homeForAvg != null
+      ? homeForAvg / Math.max(leagueHomeAvg, 0.35)
+      : allForAvg / Math.max(leagueOverallAvg, 0.35);
+    const awayAttackRaw = awayForAvg != null
+      ? awayForAvg / Math.max(leagueAwayAvg, 0.35)
+      : allForAvg / Math.max(leagueOverallAvg, 0.35);
+
+    const homeDefWeakRaw = homeAgainstAvg != null
+      ? homeAgainstAvg / Math.max(leagueAwayAvg, 0.35)
+      : allAgainstAvg / Math.max(leagueOverallAvg, 0.35);
+    const awayDefWeakRaw = awayAgainstAvg != null
+      ? awayAgainstAvg / Math.max(leagueHomeAvg, 0.35)
+      : allAgainstAvg / Math.max(leagueOverallAvg, 0.35);
+
+    strengths[teamId] = {
+      homeAttack: clamp(shrinkToOne(homeAttackRaw, stats.homeFor.length), 0.62, 1.55),
+      awayAttack: clamp(shrinkToOne(awayAttackRaw, stats.awayFor.length), 0.62, 1.55),
+      homeDefenseWeak: clamp(shrinkToOne(homeDefWeakRaw, stats.homeAgainst.length), 0.62, 1.60),
+      awayDefenseWeak: clamp(shrinkToOne(awayDefWeakRaw, stats.awayAgainst.length), 0.62, 1.60),
+    };
+  }
+
+  for (const fixture of fixtures) {
+    const gw = toNum(fixture.event, 0);
+    const homeId = toNum(fixture.team_h, 0);
+    const awayId = toNum(fixture.team_a, 0);
+    if (!gw || !homeId || !awayId) continue;
+
+    const h = strengths[homeId] || defaultStrength;
+    const a = strengths[awayId] || defaultStrength;
+    const homeFdr = toNum(fixture.team_h_difficulty, 3);
+    const awayFdr = toNum(fixture.team_a_difficulty, 3);
+
+    const homeFdrAdj = clamp(1 + ((3 - homeFdr) * 0.12), 0.72, 1.32);
+    const awayFdrAdj = clamp(1 + ((3 - awayFdr) * 0.12), 0.72, 1.32);
+
+    const lambdaHome = clamp(
+      leagueHomeAvg * h.homeAttack * a.awayDefenseWeak * homeFdrAdj,
+      0.20,
+      3.60
+    );
+    const lambdaAway = clamp(
+      leagueAwayAvg * a.awayAttack * h.homeDefenseWeak * awayFdrAdj,
+      0.20,
+      3.30
+    );
+
+    const totalLambda = lambdaHome + lambdaAway;
+    const rho = clamp(-0.08 + ((2.4 - totalLambda) * 0.035), -0.16, -0.02);
+
+    const scoreMatrix = buildDixonColesScoreMatrix(lambdaHome, lambdaAway, rho, 7);
+    const homeGoalDist = extractTeamGoalDistribution(scoreMatrix, 'home');
+    const awayGoalDist = extractTeamGoalDistribution(scoreMatrix, 'away');
+
+    if (!byTeamGw[homeId]) byTeamGw[homeId] = {};
+    if (!byTeamGw[awayId]) byTeamGw[awayId] = {};
+    if (!Array.isArray(byTeamGw[homeId][gw])) byTeamGw[homeId][gw] = [];
+    if (!Array.isArray(byTeamGw[awayId][gw])) byTeamGw[awayId][gw] = [];
+
+    byTeamGw[homeId][gw].push({
+      fixtureId: toNum(fixture.id, 0),
+      teamLambda: lambdaHome,
+      oppLambda: lambdaAway,
+      isHome: true,
+      rho,
+      teamGoalDist: homeGoalDist,
+      oppGoalDist: awayGoalDist,
+    });
+    byTeamGw[awayId][gw].push({
+      fixtureId: toNum(fixture.id, 0),
+      teamLambda: lambdaAway,
+      oppLambda: lambdaHome,
+      isHome: false,
+      rho,
+      teamGoalDist: awayGoalDist,
+      oppGoalDist: homeGoalDist,
+    });
+  }
+
+  return byTeamGw;
+}
+
 // Main sync function - call this weekly
 async function syncFPLData() {
   console.log('[FPL] Starting data sync...');
@@ -536,12 +902,10 @@ async function syncFPLData() {
     );
   }
 
-  // Upsert players (top 200 by total points for performance)
-  const topPlayers = elements
-    .sort((a, b) => b.total_points - a.total_points)
-    .slice(0, 200);
+  // Upsert all active FPL players
+  const allPlayers = [...elements].sort((a, b) => b.total_points - a.total_points);
 
-  for (const p of topPlayers) {
+  for (const p of allPlayers) {
     await db.execute(
       `INSERT INTO players
          (id, name, team_id, position, price, total_points, form, minutes,
@@ -621,13 +985,13 @@ async function syncFPLData() {
   }
 
   console.log('[FPL] Syncing player gameweek history...');
-  await syncPlayerGameweekHistory(topPlayers, currentGW);
+  await syncPlayerGameweekHistory(allPlayers, currentGW);
 
   console.log('[FPL] Fetching FotMob xG/xA and form context...');
   await syncFotMobData();
 
   console.log('[FPL] Running enhanced prediction engine...');
-  await runPredictionEngine(nextGW, topPlayers, relevantFixtures);
+  await runPredictionEngine(nextGW, allPlayers, relevantFixtures);
   console.log('[FPL] Predictions updated.');
 }
 
@@ -636,24 +1000,35 @@ async function runPredictionEngine(nextGW, players, fixtures) {
   const pointsPerGoal = { 1: 6, 2: 6, 3: 5, 4: 4 };
   const pointsPerCS = { 1: 4, 2: 4, 3: 1, 4: 0 };
   const pointsPerAssist = 3;
+  const fixtureGoalModels = await buildFixtureGoalModels(fixtures);
 
-  // Build fixture difficulty lookup per team per GW
-  const fdrMap = {};
-  const opponentMap = {};
-  const venueMap = {};
+  // Build fixture lookup per team per GW as arrays to support DGW.
+  const teamFixturesByGw = {};
   for (const f of fixtures) {
-    if (!fdrMap[f.team_h]) fdrMap[f.team_h] = {};
-    if (!fdrMap[f.team_a]) fdrMap[f.team_a] = {};
-    if (!opponentMap[f.team_h]) opponentMap[f.team_h] = {};
-    if (!opponentMap[f.team_a]) opponentMap[f.team_a] = {};
-    if (!venueMap[f.team_h]) venueMap[f.team_h] = {};
-    if (!venueMap[f.team_a]) venueMap[f.team_a] = {};
-    fdrMap[f.team_h][f.event] = toNum(f.team_h_difficulty, 3);
-    fdrMap[f.team_a][f.event] = toNum(f.team_a_difficulty, 3);
-    opponentMap[f.team_h][f.event] = toNum(f.team_a, 0);
-    opponentMap[f.team_a][f.event] = toNum(f.team_h, 0);
-    venueMap[f.team_h][f.event] = true;
-    venueMap[f.team_a][f.event] = false;
+    const gw = toNum(f.event, 0);
+    if (!gw) continue;
+    const homeTeamId = toNum(f.team_h, 0);
+    const awayTeamId = toNum(f.team_a, 0);
+    const fixtureId = toNum(f.id, 0);
+    if (!homeTeamId || !awayTeamId) continue;
+
+    if (!teamFixturesByGw[homeTeamId]) teamFixturesByGw[homeTeamId] = {};
+    if (!teamFixturesByGw[awayTeamId]) teamFixturesByGw[awayTeamId] = {};
+    if (!Array.isArray(teamFixturesByGw[homeTeamId][gw])) teamFixturesByGw[homeTeamId][gw] = [];
+    if (!Array.isArray(teamFixturesByGw[awayTeamId][gw])) teamFixturesByGw[awayTeamId][gw] = [];
+
+    teamFixturesByGw[homeTeamId][gw].push({
+      fixtureId,
+      fdr: toNum(f.team_h_difficulty, 3),
+      opponentTeamId: awayTeamId,
+      wasHome: true,
+    });
+    teamFixturesByGw[awayTeamId][gw].push({
+      fixtureId,
+      fdr: toNum(f.team_a_difficulty, 3),
+      opponentTeamId: homeTeamId,
+      wasHome: false,
+    });
   }
 
   const playerIds = players.map(p => p.id);
@@ -728,9 +1103,7 @@ async function runPredictionEngine(nextGW, players, fixtures) {
   }
 
   for (const p of players) {
-    const teamFixtures = fdrMap[p.team] || {};
-    const teamOpponents = opponentMap[p.team] || {};
-    const teamVenue = venueMap[p.team] || {};
+    const teamFixtures = teamFixturesByGw[p.team] || {};
     const profile = profileMap[p.id] || {};
     const playerHistoryRows = historyByPlayer[p.id] || [];
     const history = historyFeaturesByPlayer[p.id] || getHistoryFeatures([]);
@@ -773,223 +1146,409 @@ async function runPredictionEngine(nextGW, players, fixtures) {
     const avgPoints6Signal = historySample > 0
       ? history.avgPoints6
       : (profile.avgPoints6 ?? avgPoints3Signal);
+    const seasonPointsSignal = historySample > 0
+      ? history.seasonAvgPoints
+      : (profile.avgPoints6 ?? avgPoints6Signal);
     const rawRecentMinutes = historySample > 0
       ? (history.minutesRatio * 90)
       : (profile.avgMinutes6 ?? profile.avgMinutes3 ?? profile.lastGwMinutes ?? null);
     const minutesRatioSignal = rawRecentMinutes != null
-      ? clamp(rawRecentMinutes / 90, 0.2, 1)
+      ? clamp(rawRecentMinutes / 90, 0, 1)
       : null;
     const trendSignal = historySample > 0
       ? history.trend
       : (avgPoints3Signal - avgPoints6Signal);
     const volatilitySignal = historySample > 0 ? history.volatility : 1.6;
 
-    const seasonStartsApprox = Math.max(seasonMinutes / 85, 1);
-    const seasonMinsRatio = clamp(seasonMinutes / (seasonStartsApprox * 90), 0.35, 1);
+    // Use actual GW appearance count from history so low-minute players are not
+    // treated like regular starters.
+    const totalApproxGames = playerHistoryRows.length || Math.max(Math.floor(seasonMinutes / 30), 1);
+    const seasonMinsRatio = clamp(seasonMinutes / (totalApproxGames * 90), 0.05, 1);
     const minsProbBase = minutesRatioSignal != null
-      ? clamp((minutesRatioSignal * 0.75) + (seasonMinsRatio * 0.25), 0.2, 1)
+      ? clamp((minutesRatioSignal * 0.75) + (seasonMinsRatio * 0.25), 0.05, 1)
       : seasonMinsRatio;
-
-    for (let gw = nextGW; gw <= nextGW + 2; gw++) {
-      const fdr = teamFixtures[gw] ?? 3;
-      const opponentTeamId = teamOpponents[gw] ?? null;
-      const upcomingWasHome = teamVenue[gw] ?? null;
-      const vsOpponent = getOpponentHistoryFeatures(playerHistoryRows, opponentTeamId, upcomingWasHome);
-      const vsOppWeight = clamp((vsOpponent.sample / 4) * 0.22 + (vsOpponent.venueSample / 2) * 0.10, 0, 0.32);
-
-      const attackMult = fdr <= 2 ? 1.2 : fdr === 3 ? 1.0 : fdr === 4 ? 0.86 : 0.72;
-      const opponentFormAdj = vsOpponent.avgPoints != null
-        ? clamp(1 + ((vsOpponent.avgPoints - avgPoints6Signal) * 0.012), 0.90, 1.12)
-        : 1;
-      const attackMultAdj = attackMult * opponentFormAdj;
-      const csFixtureProb = fdr <= 2 ? 0.58 : fdr === 3 ? 0.40 : fdr === 4 ? 0.25 : 0.14;
-
-      const minsBaseAdj = vsOpponent.minutesRatio != null
-        ? weightedBlend(
-            [
-              { value: minsProbBase, weight: 0.82 },
-              { value: vsOpponent.minutesRatio, weight: 0.18 },
-            ],
-            minsProbBase
-          )
-        : minsProbBase;
-      const minsProb = clamp(minsBaseAdj * availabilityMult, 0.03, 1);
-      const xgPer90 = weightedBlend(
+    const minutesProfile = buildMinutesRotationProfile({
+      fplHistoryRows: playerHistoryRows,
+      fotmobMatches: profile.recentMatches,
+      fallbackMinsProb: minsProbBase,
+      availability: 1,
+    });
+    const rotationRiskSeason = toNum(minutesProfile.rotationRisk, 45);
+    const minsProbFinalCheckBase = clamp(
+      weightedBlend(
         [
-          { value: history.xg90, weight: 0.29 },
-          { value: history.goals90, weight: 0.14 },
-          { value: profile.xg, weight: 0.22 },
-          { value: fotmobRecent.xg90, weight: 0.16 },
-          { value: fotmobRecent.xgot90, weight: 0.10 },
-          { value: seasonGoal90, weight: 0.07 },
-          { value: seasonXgotPerMatch, weight: 0.04 },
-          { value: vsOpponent.xg90, weight: vsOppWeight },
-          { value: vsOpponent.goals90, weight: vsOppWeight * 0.8 },
+          { value: minsProbBase, weight: 0.38 },
+          { value: minutesProfile.baseMinsProb, weight: 0.22 },
+          { value: minutesProfile.minsProb, weight: 0.40 },
         ],
-        profile.xg ?? seasonGoal90
-      );
-      const xaPer90 = weightedBlend(
-        [
-          { value: history.xa90, weight: 0.34 },
-          { value: profile.xa, weight: 0.28 },
-          { value: fotmobRecent.xa90, weight: 0.20 },
-          { value: seasonAssist90, weight: 0.10 },
-          { value: vsOpponent.xa90, weight: vsOppWeight },
-        ],
-        profile.xa ?? seasonAssist90
-      );
+        minsProbBase
+      ),
+      0.03,
+      1
+    );
 
-      // Confidence control: if history/FotMob are sparse, reduce optimistic open-play rates.
-      const syntheticHistorySample = historySample > 0
-        ? historySample
-        : (profile.avgPoints6 != null ? 6 : profile.avgPoints3 != null ? 3 : profile.lastGwPoints != null ? 1 : 0);
-      const opponentEvidence = clamp(vsOpponent.sample / 3, 0, 1);
-      const historyCoverage = clamp(syntheticHistorySample / 6, 0, 1);
-      const evidenceMult = clamp(
-        0.60 + (historyCoverage * 0.25) + (hasFotmobSignal ? 0.10 : 0) + (opponentEvidence * 0.05),
-        0.55,
-        1
-      );
-      const coldStartMult = (!hasFotmobSignal && syntheticHistorySample < 3) ? 0.74 : 1;
-      const xgPer90Adj = xgPer90 * evidenceMult * coldStartMult;
-      const xaPer90Adj = xaPer90 * evidenceMult * coldStartMult;
-      const goalRateFallback = pos === 4 ? 0.34 : pos === 3 ? 0.23 : pos === 2 ? 0.08 : 0.03;
-      const recentScoreRate = weightedBlend(
-        [
-          { value: history.scoreRate3, weight: 0.56 },
-          { value: history.scoreRate6, weight: 0.30 },
-          { value: fotmobRecent.scoreRate, weight: 0.14 },
-        ],
-        goalRateFallback
-      );
-      const scoringFormBoost = clamp((recentScoreRate - goalRateFallback) * 0.32, -0.08, 0.14);
-      const opponentGoalBoostMult = vsOpponent.scoreRate != null
-        ? clamp((vsOpponent.scoreRate - recentScoreRate) * 0.24, -0.08, 0.10)
-        : 0;
-      const blankRunPenalty = history.blankStreak > 2
-        ? clamp((history.blankStreak - 2) * 0.035, 0, 0.16)
-        : 0;
-      const lastMatchScoredBoost = history.lastMatchScored ? 0.025 : -0.005;
-      const shotPressure = weightedBlend(
-        [
-          { value: fotmobRecent.shots90, weight: 0.50 },
-          { value: fotmobRecent.sot90 != null ? fotmobRecent.sot90 * 1.9 : null, weight: 0.50 },
-        ],
-        null
-      );
-      const shotPressureBoost = shotPressure != null
-        ? clamp((shotPressure - 1.4) * 0.07, -0.06, 0.14)
-        : 0;
-      const xgotBoost = fotmobRecent.xgot90 != null
-        ? clamp((fotmobRecent.xgot90 - 0.16) * 0.16, -0.04, 0.10)
-        : 0;
-      const goalSignalMult = clamp(
-        1 + scoringFormBoost + opponentGoalBoostMult + lastMatchScoredBoost + shotPressureBoost + xgotBoost - blankRunPenalty,
-        0.75,
-        1.35
-      );
+    // Weight FotMob season xG/xA by minute evidence and normalize to per-90.
+    const fotmobMinutesWeight = minutesProfile.avgMinutesCombined > 0
+      ? clamp(minutesProfile.avgMinutesCombined / 60, 0, 1)
+      : 0;
+    const fotmobScaleMinutes = minutesProfile.avgFotmobMinutes
+      ?? minutesProfile.avgFplMinutesRecent
+      ?? minutesProfile.avgFplMinutes
+      ?? null;
+    const fotmobPerGameToPer90 = fotmobScaleMinutes != null && fotmobScaleMinutes > 0
+      ? clamp(90 / fotmobScaleMinutes, 0.8, 3.0)
+      : 1.20;
 
-      // Include set-piece role probabilities (penalty, direct FK, corners) on top of open-play rates.
-      const setPiecePosMult = pos === 4 ? 1 : pos === 3 ? 0.8 : pos === 2 ? 0.28 : 0.12;
-      const setPieceEvidenceMult = hasFotmobSignal || syntheticHistorySample >= 3 ? 1 : 0.45;
-      const setPieceMult = setPiecePosMult * setPieceEvidenceMult;
-      const setPieceGoalAdd = (setPiece.penaltyGoalBoost + setPiece.freeKickGoalBoost) * minsProb * setPieceMult;
-      const setPieceAssistAdd = (setPiece.cornerAssistBoost + setPiece.directFkAssistBoost) * minsProb * setPieceMult;
-
-      const lambdaGoal = (Math.max(xgPer90Adj, 0) * minsProb * attackMultAdj * goalSignalMult) + setPieceGoalAdd;
-      const lambdaAssist = (Math.max(xaPer90Adj, 0) * minsProb * attackMultAdj * 0.95) + setPieceAssistAdd;
-      const xGProb = clamp(1 - Math.exp(-lambdaGoal), 0, 0.97);
-      const xAProb = clamp(1 - Math.exp(-lambdaAssist), 0, 0.90);
-
-      let csProb = 0;
-      if (pos === 4) {
-        csProb = 0;
-      } else if (pos === 3) {
-        csProb = clamp(
-          weightedBlend(
-            [
-              { value: csFixtureProb * 0.44, weight: 0.44 },
-              { value: history.csRate, weight: 0.33 },
-              { value: seasonCSRate, weight: 0.20 },
-              { value: vsOpponent.csRate, weight: vsOppWeight },
-            ],
-            csFixtureProb * 0.40
-          ),
-          0.04,
-          0.55
-        );
-      } else {
-        csProb = clamp(
-          weightedBlend(
-            [
-              { value: csFixtureProb, weight: 0.58 },
-              { value: history.csRate, weight: 0.23 },
-              { value: seasonCSRate, weight: 0.15 },
-              { value: vsOpponent.csRate, weight: vsOppWeight },
-            ],
-            csFixtureProb
-          ),
-          0.08,
-          0.78
+    // Hard gate for unavailable/no-minute players.
+    const chanceNow = profile.chanceNext ?? profile.chanceThis;
+    if (minutesProfile.zeroed === true || chanceNow === 0) {
+      for (let gw = nextGW; gw <= nextGW + 2; gw++) {
+        const gwFixtures = Array.isArray(teamFixtures[gw]) ? teamFixtures[gw] : [];
+        const gwFdr = gwFixtures.length
+          ? Math.round(mean(gwFixtures.map(fx => toNum(fx.fdr, 3))))
+          : 5;
+        await db.execute(
+          `INSERT INTO predictions
+             (player_id, gameweek, xpts, likely_pts, min_pts, max_pts,
+              xg_prob, xa_prob, cs_prob, mins_prob, avg_bonus, fdr)
+           VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?)
+           ON DUPLICATE KEY UPDATE
+             xpts=0, likely_pts=0, min_pts=0, max_pts=0,
+             xg_prob=0, xa_prob=0, cs_prob=0, mins_prob=0,
+             avg_bonus=0, fdr=VALUES(fdr)`,
+          [p.id, gw, gwFdr]
         );
       }
-      csProb = clamp(csProb * availabilityMult, 0, 0.85);
+      continue;
+    }
 
-      const blendedRating = weightedBlend(
-        [
-          { value: profile.seasonRating, weight: 0.65 },
-          { value: fotmobRecent.avgRating, weight: 0.35 },
-        ],
-        profile.seasonRating ?? fotmobRecent.avgRating ?? 6.8
-      );
-      const ratingBoost = blendedRating != null
-        ? clamp((blendedRating - 6.5) * 0.45, -0.30, 1.25)
-        : 0;
-      const formBoost = clamp((formScore / 10) * availabilityMult, 0, 1.2);
-      const trendBoost = clamp(trendSignal / 3.5, -0.6, 0.8);
-      const recentPointsBoost = clamp(avgPoints3Signal * 0.10, 0, 1.5);
-      const opponentBoost = vsOpponent.avgPoints != null
-        ? clamp(
-            ((vsOpponent.avgPoints - avgPoints6Signal) * 0.14) +
-            ((vsOpponent.trend ?? 0) * 0.08),
-            -0.75,
-            0.95
-          )
-        : 0;
-      const injuryPenalty = availabilityMult < 0.7 ? (0.7 - availabilityMult) * 1.8 : 0;
-      const uncertaintyPenalty = (1 - evidenceMult) * 1.3;
-      const goalFormBonus = clamp(
-        (scoringFormBoost + opponentGoalBoostMult + shotPressureBoost + xgotBoost - blankRunPenalty) * 2.2,
-        -0.5,
-        0.8
-      );
-      const setPieceBonus = clamp(
-        (setPiece.penaltyGoalBoost * 2.3) +
-        (setPiece.freeKickGoalBoost * 1.4) +
-        (setPiece.cornerAssistBoost * 1.8) +
-        (setPiece.directFkAssistBoost * 1.2),
-        0,
-        1.2
-      );
-      const avgBonus = clamp(
-        0.3 + formBoost + ratingBoost + trendBoost + recentPointsBoost + opponentBoost + goalFormBonus + setPieceBonus - injuryPenalty - uncertaintyPenalty,
-        0.05,
-        3.5
-      );
+    for (let gw = nextGW; gw <= nextGW + 2; gw++) {
+      const gwFixtures = Array.isArray(teamFixtures[gw]) ? teamFixtures[gw] : [];
+      if (!gwFixtures.length) {
+        await db.execute(
+          `INSERT INTO predictions
+             (player_id, gameweek, xpts, likely_pts, min_pts, max_pts,
+              xg_prob, xa_prob, cs_prob, mins_prob, avg_bonus, fdr)
+           VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5)
+           ON DUPLICATE KEY UPDATE
+             xpts=0, likely_pts=0, min_pts=0, max_pts=0,
+             xg_prob=0, xa_prob=0, cs_prob=0, mins_prob=0,
+             avg_bonus=0, fdr=5`,
+          [p.id, gw]
+        );
+        continue;
+      }
 
-      const appearancePts = minsProb * 2;
-      const xPts =
-        appearancePts +
-        (xGProb * pointsPerGoal[pos]) +
-        (xAProb * pointsPerAssist) +
-        (csProb * pointsPerCS[pos]) +
-        avgBonus;
+      const fixtureModels = fixtureGoalModels[p.team]?.[gw] || [];
+      const gwCount = gwFixtures.length;
+      const gwFdr = Math.round(mean(gwFixtures.map(fx => toNum(fx.fdr, 3))));
+
+      let totalXPts = 0;
+      let minsNoProb = 1;
+      let goalNoProb = 1;
+      let assistNoProb = 1;
+      let csNoProb = 1;
+      let bonusSum = 0;
+
+      for (let fixtureIdx = 0; fixtureIdx < gwFixtures.length; fixtureIdx++) {
+        const gwFixture = gwFixtures[fixtureIdx];
+        const fdr = toNum(gwFixture.fdr, 3);
+        const opponentTeamId = gwFixture.opponentTeamId ?? null;
+        const upcomingWasHome = gwFixture.wasHome ?? null;
+        const fixtureModel = fixtureModels.find(
+          m => toNum(m.fixtureId, 0) === toNum(gwFixture.fixtureId, 0)
+        ) || null;
+        const vsOpponent = getOpponentHistoryFeatures(playerHistoryRows, opponentTeamId, upcomingWasHome);
+        const vsOppWeight = clamp((vsOpponent.sample / 4) * 0.22 + (vsOpponent.venueSample / 2) * 0.10, 0, 0.32);
+
+        const attackMult = fdr <= 2 ? 1.2 : fdr === 3 ? 1.0 : fdr === 4 ? 0.86 : 0.72;
+        const opponentFormAdj = vsOpponent.avgPoints != null
+          ? clamp(1 + ((vsOpponent.avgPoints - avgPoints6Signal) * 0.012), 0.90, 1.12)
+          : 1;
+        const attackMultAdj = attackMult * opponentFormAdj;
+        const csFixtureProb = fdr <= 2 ? 0.58 : fdr === 3 ? 0.40 : fdr === 4 ? 0.25 : 0.14;
+
+        const minsBaseAdj = vsOpponent.minutesRatio != null
+          ? weightedBlend(
+              [
+                { value: minsProbFinalCheckBase, weight: 0.82 },
+                { value: vsOpponent.minutesRatio, weight: 0.18 },
+              ],
+              minsProbFinalCheckBase
+            )
+          : minsProbFinalCheckBase;
+        const minsRiskGuard = clamp(1 - (rotationRiskSeason * 0.0012), 0.84, 1);
+        const extraFixturePenalty = gwCount > 1
+          ? clamp(1 - (fixtureIdx * (0.10 + (rotationRiskSeason * 0.0007))), 0.72, 1)
+          : 1;
+        const minsProb = clamp(minsBaseAdj * minsRiskGuard * availabilityMult * extraFixturePenalty, 0.02, 1);
+
+        const xgSeasonPer90 = profile.xg != null ? profile.xg * fotmobPerGameToPer90 : null;
+        const xaSeasonPer90 = profile.xa != null ? profile.xa * fotmobPerGameToPer90 : null;
+        const xgSeasonWeighted = xgSeasonPer90 != null ? xgSeasonPer90 * fotmobMinutesWeight : null;
+        const xaSeasonWeighted = xaSeasonPer90 != null ? xaSeasonPer90 * fotmobMinutesWeight : null;
+
+        const xgPer90 = weightedBlend(
+          [
+            { value: history.xg90, weight: 0.29 },
+            { value: history.goals90, weight: 0.14 },
+            { value: xgSeasonWeighted, weight: 0.22 },
+            { value: fotmobRecent.xg90, weight: 0.16 },
+            { value: fotmobRecent.xgot90, weight: 0.10 },
+            { value: seasonGoal90, weight: 0.07 },
+            { value: seasonXgotPerMatch, weight: 0.04 },
+            { value: vsOpponent.xg90, weight: vsOppWeight },
+            { value: vsOpponent.goals90, weight: vsOppWeight * 0.8 },
+          ],
+          xgSeasonWeighted ?? seasonGoal90
+        );
+        const xaPer90 = weightedBlend(
+          [
+            { value: history.xa90, weight: 0.34 },
+            { value: xaSeasonWeighted, weight: 0.28 },
+            { value: fotmobRecent.xa90, weight: 0.20 },
+            { value: seasonAssist90, weight: 0.10 },
+            { value: vsOpponent.xa90, weight: vsOppWeight },
+          ],
+          xaSeasonWeighted ?? seasonAssist90
+        );
+
+        const syntheticHistorySample = historySample > 0
+          ? historySample
+          : (profile.avgPoints6 != null ? 6 : profile.avgPoints3 != null ? 3 : profile.lastGwPoints != null ? 1 : 0);
+        const opponentEvidence = clamp(vsOpponent.sample / 3, 0, 1);
+        const historyCoverage = clamp(syntheticHistorySample / 6, 0, 1);
+        const evidenceMult = clamp(
+          0.60 + (historyCoverage * 0.25) + (hasFotmobSignal ? 0.10 : 0) + (opponentEvidence * 0.05),
+          0.55,
+          1
+        );
+        const coldStartMult = (!hasFotmobSignal && syntheticHistorySample < 3) ? 0.74 : 1;
+        const subDiscountMult = clamp(0.40 + (minutesProfile.startRate * 0.60), 0.35, 1.0);
+        const xgPer90Adj = xgPer90 * evidenceMult * coldStartMult * subDiscountMult;
+        const xaPer90Adj = xaPer90 * evidenceMult * coldStartMult * subDiscountMult;
+        const goalRateFallback = pos === 4 ? 0.34 : pos === 3 ? 0.23 : pos === 2 ? 0.08 : 0.03;
+        const recentScoreRate = weightedBlend(
+          [
+            { value: history.scoreRate3, weight: 0.56 },
+            { value: history.scoreRate6, weight: 0.30 },
+            { value: history.seasonScoreRate, weight: 0.14 },
+            { value: fotmobRecent.scoreRate, weight: 0.14 },
+          ],
+          goalRateFallback
+        );
+        const scoringFormBoost = clamp((recentScoreRate - goalRateFallback) * 0.32, -0.08, 0.14);
+        const opponentGoalBoostMult = vsOpponent.scoreRate != null
+          ? clamp((vsOpponent.scoreRate - recentScoreRate) * 0.24, -0.08, 0.10)
+          : 0;
+        const blankRunPenalty = history.blankStreak > 2
+          ? clamp((history.blankStreak - 2) * 0.035, 0, 0.16)
+          : 0;
+        const lastMatchScoredBoost = history.lastMatchScored ? 0.025 : -0.005;
+        const shotPressure = weightedBlend(
+          [
+            { value: fotmobRecent.shots90, weight: 0.50 },
+            { value: fotmobRecent.sot90 != null ? fotmobRecent.sot90 * 1.9 : null, weight: 0.50 },
+          ],
+          null
+        );
+        const shotPressureBoost = shotPressure != null
+          ? clamp((shotPressure - 1.4) * 0.07, -0.06, 0.14)
+          : 0;
+        const xgotBoost = fotmobRecent.xgot90 != null
+          ? clamp((fotmobRecent.xgot90 - 0.16) * 0.16, -0.04, 0.10)
+          : 0;
+        const goalSignalMult = clamp(
+          1 + scoringFormBoost + opponentGoalBoostMult + lastMatchScoredBoost + shotPressureBoost + xgotBoost - blankRunPenalty,
+          0.75,
+          1.35
+        );
+
+        const setPiecePosMult = pos === 4 ? 1 : pos === 3 ? 0.8 : pos === 2 ? 0.28 : 0.12;
+        const setPieceEvidenceMult = hasFotmobSignal || syntheticHistorySample >= 3 ? 1 : 0.45;
+        const setPieceMult = setPiecePosMult * setPieceEvidenceMult;
+        const setPieceGoalAdd = (setPiece.penaltyGoalBoost + setPiece.freeKickGoalBoost) * minsProb * setPieceMult;
+        const setPieceAssistAdd = (setPiece.cornerAssistBoost + setPiece.directFkAssistBoost) * minsProb * setPieceMult;
+
+        const lambdaGoal = (Math.max(xgPer90Adj, 0) * minsProb * attackMultAdj * goalSignalMult) + setPieceGoalAdd;
+        const lambdaAssist = (Math.max(xaPer90Adj, 0) * minsProb * attackMultAdj * 0.95) + setPieceAssistAdd;
+        const poissonGoalProb = clamp(1 - Math.exp(-lambdaGoal), 0, 0.97);
+        let dixonColesGoalProb = poissonGoalProb;
+
+        if (fixtureModel?.teamGoalDist?.length) {
+          const teamLambda = Math.max(toNum(fixtureModel.teamLambda, 0), 0.15);
+          const positionShareFloor = pos === 4 ? 0.03 : pos === 3 ? 0.02 : pos === 2 ? 0.008 : 0.004;
+          const positionShareCap = pos === 4 ? 0.75 : pos === 3 ? 0.62 : pos === 2 ? 0.40 : 0.28;
+          const rawShare = lambdaGoal / teamLambda;
+          const playerShare = clamp(rawShare, positionShareFloor, positionShareCap);
+          dixonColesGoalProb = playerGoalProbFromTeamDistribution(fixtureModel.teamGoalDist, playerShare);
+        }
+
+        const xGProb = clamp(
+          weightedBlend(
+            [
+              { value: poissonGoalProb, weight: 0.45 },
+              { value: dixonColesGoalProb, weight: 0.55 },
+            ],
+            poissonGoalProb
+          ),
+          0,
+          0.97
+        );
+        const xAProb = clamp(1 - Math.exp(-lambdaAssist), 0, 0.90);
+
+        let csProb = 0;
+        if (pos === 4) {
+          csProb = 0;
+        } else if (pos === 3) {
+          csProb = clamp(
+            weightedBlend(
+              [
+                { value: csFixtureProb * 0.44, weight: 0.44 },
+                { value: history.csRate, weight: 0.33 },
+                { value: seasonCSRate, weight: 0.20 },
+                { value: vsOpponent.csRate, weight: vsOppWeight },
+              ],
+              csFixtureProb * 0.40
+            ),
+            0.04,
+            0.55
+          );
+        } else {
+          csProb = clamp(
+            weightedBlend(
+              [
+                { value: csFixtureProb, weight: 0.58 },
+                { value: history.csRate, weight: 0.23 },
+                { value: seasonCSRate, weight: 0.15 },
+                { value: vsOpponent.csRate, weight: vsOppWeight },
+              ],
+              csFixtureProb
+            ),
+            0.08,
+            0.78
+          );
+        }
+        csProb = clamp(csProb * availabilityMult, 0, 0.85);
+
+        const blendedRating = weightedBlend(
+          [
+            { value: profile.seasonRating, weight: 0.65 },
+            { value: fotmobRecent.avgRating, weight: 0.35 },
+          ],
+          profile.seasonRating ?? fotmobRecent.avgRating ?? 6.8
+        );
+        const ratingBoost = blendedRating != null
+          ? clamp((blendedRating - 6.5) * 0.22, -0.18, 0.55)
+          : 0;
+        const formBoost = clamp((formScore / 10) * availabilityMult * 0.35, 0, 0.45);
+        const trendVsSeason = avgPoints3Signal - seasonPointsSignal;
+        const trendBoost = clamp((trendSignal * 0.12) + (trendVsSeason * 0.10), -0.16, 0.28);
+        const recentPointsBase = weightedBlend(
+          [
+            { value: avgPoints3Signal, weight: 0.60 },
+            { value: avgPoints6Signal, weight: 0.25 },
+            { value: seasonPointsSignal, weight: 0.15 },
+          ],
+          avgPoints6Signal
+        );
+        const recentPointsBoost = clamp(recentPointsBase * 0.055, 0, 0.90);
+        const opponentBoost = vsOpponent.avgPoints != null
+          ? clamp(
+              ((vsOpponent.avgPoints - avgPoints6Signal) * 0.06) +
+              ((vsOpponent.trend ?? 0) * 0.04),
+              -0.25,
+              0.35
+            )
+          : 0;
+        const injuryPenalty = availabilityMult < 0.7 ? (0.7 - availabilityMult) * 1.4 : 0;
+        const uncertaintyPenalty = (1 - evidenceMult) * 0.45;
+        const goalFormBonus = clamp(
+          (scoringFormBoost + opponentGoalBoostMult + shotPressureBoost + xgotBoost - blankRunPenalty) * 0.9,
+          -0.18,
+          0.28
+        );
+        const setPieceBonus = clamp(
+          (setPiece.penaltyGoalBoost * 0.75) +
+          (setPiece.freeKickGoalBoost * 0.50) +
+          (setPiece.cornerAssistBoost * 0.70) +
+          (setPiece.directFkAssistBoost * 0.45),
+          0,
+          0.45
+        );
+        const bonusAvailabilityMult = clamp((minsProb * 0.72) + 0.20, 0.2, 0.92);
+        const avgBonus = clamp(
+          (
+            0.12 +
+            formBoost +
+            ratingBoost +
+            trendBoost +
+            recentPointsBoost +
+            opponentBoost +
+            goalFormBonus +
+            setPieceBonus -
+            injuryPenalty -
+            uncertaintyPenalty
+          ) * bonusAvailabilityMult,
+          0,
+          1.85
+        );
+
+        const appearancePts = expectedAppearancePoints(
+          minsProb,
+          minutesProfile.startRate,
+          minutesProfile.avgMinutesCombined
+        );
+        const goalPointsFromProb = xGProb * pointsPerGoal[pos];
+        const assistPointsFromProb = xAProb * pointsPerAssist;
+        const goalEventsExp = clamp(lambdaGoal, 0, pos === 4 ? 2.2 : pos === 3 ? 1.8 : pos === 2 ? 1.15 : 0.85);
+        const assistEventsExp = clamp(lambdaAssist, 0, 1.35);
+        const goalPointsFromEvents = goalEventsExp * pointsPerGoal[pos];
+        const assistPointsFromEvents = assistEventsExp * pointsPerAssist;
+        const goalPoints = weightedBlend(
+          [
+            { value: goalPointsFromProb, weight: 0.40 },
+            { value: goalPointsFromEvents, weight: 0.60 },
+          ],
+          goalPointsFromProb
+        );
+        const assistPoints = weightedBlend(
+          [
+            { value: assistPointsFromProb, weight: 0.45 },
+            { value: assistPointsFromEvents, weight: 0.55 },
+          ],
+          assistPointsFromProb
+        );
+        const concedePenalty = (pos === 1 || pos === 2)
+          ? expectedConcedeDeduction(fixtureModel?.oppGoalDist || [], minsProb)
+          : 0;
+        const xPts =
+          appearancePts +
+          goalPoints +
+          assistPoints +
+          (csProb * pointsPerCS[pos]) +
+          avgBonus -
+          concedePenalty;
+
+        totalXPts += xPts;
+        minsNoProb *= (1 - minsProb);
+        goalNoProb *= (1 - xGProb);
+        assistNoProb *= (1 - xAProb);
+        csNoProb *= (1 - csProb);
+        bonusSum += avgBonus;
+      }
+
+      const xGProbGw = clamp(1 - goalNoProb, 0, 0.99);
+      const xAProbGw = clamp(1 - assistNoProb, 0, 0.95);
+      const csProbGw = clamp(1 - csNoProb, 0, 0.95);
+      const minsProbGw = clamp(1 - minsNoProb, 0, 1);
+      const avgBonusGw = gwCount > 0 ? (bonusSum / gwCount) : 0;
 
       const volatility = volatilitySignal ?? 1.8;
-      const likelyPts = Math.max(0, Math.round(xPts));
-      const spread = 1.7 + (volatility * 0.75);
-      const minPts = Math.max(0, Math.floor(xPts - spread));
-      const maxPts = Math.round(xPts + spread + 1.3);
+      const spread = (1.7 + (volatility * 0.75)) * Math.sqrt(gwCount);
+      const likelyPts = Math.max(0, Math.round(totalXPts));
+      const minPts = Math.max(0, Math.floor(totalXPts - spread));
+      const maxPts = Math.round(totalXPts + spread + (1.3 * gwCount));
 
       await db.execute(
         `INSERT INTO predictions
@@ -1005,20 +1564,20 @@ async function runPredictionEngine(nextGW, players, fixtures) {
         [
           p.id,
           gw,
-          parseFloat(xPts.toFixed(2)),
+          parseFloat(totalXPts.toFixed(2)),
           likelyPts,
           minPts,
           maxPts,
-          parseFloat(xGProb.toFixed(3)),
-          parseFloat(xAProb.toFixed(3)),
-          parseFloat(csProb.toFixed(3)),
-          parseFloat(minsProb.toFixed(3)),
-          parseFloat(avgBonus.toFixed(2)),
-          fdr,
+          parseFloat(xGProbGw.toFixed(3)),
+          parseFloat(xAProbGw.toFixed(3)),
+          parseFloat(csProbGw.toFixed(3)),
+          parseFloat(minsProbGw.toFixed(3)),
+          parseFloat(avgBonusGw.toFixed(2)),
+          gwFdr,
         ]
       );
     }
   }
 }
 
-module.exports = { syncFPLData, fetchPlayerHistory };
+module.exports = { syncFPLData, syncAvailabilityData, fetchPlayerHistory };

@@ -1,6 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const db      = require('../config/db');
+const { buildMinutesRotationProfile } = require('../services/minutesRotationModel');
 
 async function resolveGameweek(gw) {
   const parsed = parseInt(gw, 10);
@@ -8,6 +9,39 @@ async function resolveGameweek(gw) {
 
   const [rows] = await db.execute('SELECT MIN(gameweek) AS nextGW FROM predictions');
   return rows[0]?.nextGW || 1;
+}
+
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function mean(values = []) {
+  if (!values.length) return 0;
+  return values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
+function stdDev(values = []) {
+  if (!values.length) return 0;
+  const avg = mean(values);
+  const variance = mean(values.map(v => (v - avg) ** 2));
+  return Math.sqrt(variance);
+}
+
+function parseMaybeJson(raw, fallback = []) {
+  if (raw == null) return fallback;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return fallback;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 // GET /api/predictions/top?gw=30&pos=MID
@@ -322,6 +356,147 @@ router.get('/captain', async (req, res) => {
       .slice(0, limit);
 
     res.json({ success: true, gameweek, data: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/predictions/rotation-risk?gw=30&limit=12&sort=xpts
+// Uses FPL minutes history + FotMob recent minutes to estimate rotation risk.
+router.get('/rotation-risk', async (req, res) => {
+  try {
+    const gameweek = await resolveGameweek(req.query.gw);
+    const requestedLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 800)
+      : null;
+    const sort = String(req.query.sort || 'xpts').toLowerCase();
+
+    const [rows] = await db.execute(
+      `SELECT
+         p.id, p.name, p.position, p.status,
+         p.chance_of_playing_next_round, p.chance_of_playing_this_round,
+         t.short_name AS team,
+         pr.xpts, pr.likely_pts, pr.mins_prob, pr.fdr,
+         fd.recent_matches
+       FROM predictions pr
+       JOIN players p ON pr.player_id = p.id
+       JOIN teams t ON p.team_id = t.id
+       LEFT JOIN player_fotmob_data fd ON p.id = fd.player_id
+       WHERE pr.gameweek = ?
+       ORDER BY pr.xpts DESC`,
+      [gameweek]
+    );
+
+    if (!rows.length) {
+      return res.json({ success: true, gameweek, data: [] });
+    }
+
+    const playerIds = rows.map(r => parseInt(r.id, 10)).filter(Number.isFinite);
+    const idList = playerIds.join(',');
+    const [historyRows] = await db.execute(
+      `SELECT player_id, gameweek, minutes
+       FROM player_gameweek_history
+       WHERE player_id IN (${idList}) AND gameweek < ?
+       ORDER BY player_id ASC, gameweek DESC`,
+      [gameweek]
+    );
+
+    const historyByPlayer = {};
+    for (const row of historyRows) {
+      if (!historyByPlayer[row.player_id]) historyByPlayer[row.player_id] = [];
+      historyByPlayer[row.player_id].push(row);
+    }
+
+    const statusMult = { a: 1, d: 0.75, i: 0.05, s: 0.25, u: 0.2, n: 0.35 };
+
+    const data = rows.map((row) => {
+      const chance = row.chance_of_playing_next_round != null
+        ? toNum(row.chance_of_playing_next_round, 100)
+        : row.chance_of_playing_this_round != null
+          ? toNum(row.chance_of_playing_this_round, 100)
+          : 100;
+      const availability = clamp((chance / 100) * (statusMult[String(row.status || 'a').toLowerCase()] ?? 1), 0, 1);
+      const model = buildMinutesRotationProfile({
+        fplHistoryRows: historyByPlayer[row.id] || [],
+        fotmobMatches: parseMaybeJson(row.recent_matches, []),
+        fallbackMinsProb: toNum(row.mins_prob, 0.7),
+        availability,
+      });
+      const minsProbModel = clamp(toNum(model.minsProb, 0.7), 0, 1);
+      const minsProbPred = clamp(toNum(row.mins_prob, minsProbModel), 0, 1);
+      const minsProb = clamp((minsProbModel * 0.65) + (minsProbPred * 0.35), 0, 1);
+      const availabilityRisk = (1 - availability) * 24;
+      const predictionDriftRisk = Math.abs(minsProbPred - minsProbModel) * 22;
+      const rotationRisk = clamp(
+        toNum(model.rotationRisk, 45) + availabilityRisk + predictionDriftRisk,
+        1,
+        99
+      );
+      const startRate = clamp(toNum(model.startRate, 0), 0, 1);
+      const subOnRate = clamp(toNum(model.subOnRate, 0), 0, 1);
+      const cameoRate = clamp(toNum(model.cameoRate, 0), 0, 1);
+      const subOffRate = clamp(toNum(model.subOffRate, 0), 0, 1);
+      const avgFplMinutes = model.avgFplMinutes != null ? toNum(model.avgFplMinutes, 0) : null;
+      const avgFotmobMinutes = model.avgFotmobMinutes != null ? toNum(model.avgFotmobMinutes, 0) : null;
+      const avgMinutesCombined = toNum(model.avgMinutesCombined, 0);
+      const minsVolatility = toNum(model.minsVolatility, 0);
+      const fplSample = toNum(model.fplSample, 0);
+      const fotmobSample = toNum(model.fotmobSample, 0);
+
+      let substitutionPattern = 'Mixed pattern';
+      if (!fplSample && !fotmobSample) substitutionPattern = 'No minutes sample';
+      else if (cameoRate >= 0.35) substitutionPattern = 'Frequent cameo';
+      else if (subOnRate >= 0.38) substitutionPattern = 'Often subbed on';
+      else if (subOffRate >= 0.45) substitutionPattern = 'Often subbed off';
+      else if (startRate >= 0.8 && avgMinutesCombined >= 80) substitutionPattern = "Regular starter";
+      else if (avgMinutesCombined < 65) substitutionPattern = 'Managed minutes';
+
+      const riskBand =
+        rotationRisk >= 70 ? 'High' :
+        rotationRisk >= 45 ? 'Medium' : 'Low';
+
+      return {
+        id: row.id,
+        name: row.name,
+        team: row.team,
+        position: row.position,
+        fdr: row.fdr,
+        xpts: parseFloat(toNum(row.xpts, 0).toFixed(2)),
+        likely_pts: toNum(row.likely_pts, 0),
+        mins_prob: parseFloat(minsProb.toFixed(3)),
+        avg_minutes_fpl: avgFplMinutes != null ? parseFloat(avgFplMinutes.toFixed(1)) : null,
+        avg_minutes_fotmob: avgFotmobMinutes != null ? parseFloat(avgFotmobMinutes.toFixed(1)) : null,
+        avg_minutes_combined: parseFloat(avgMinutesCombined.toFixed(1)),
+        minutes_sample: {
+          fpl: fplSample,
+          fotmob: fotmobSample,
+        },
+        substitution_pattern: substitutionPattern,
+        substitution_stats: {
+          start_rate: parseFloat(startRate.toFixed(3)),
+          sub_on_rate: parseFloat(subOnRate.toFixed(3)),
+          cameo_rate: parseFloat(cameoRate.toFixed(3)),
+          sub_off_rate: parseFloat(subOffRate.toFixed(3)),
+          minutes_volatility: parseFloat(minsVolatility.toFixed(2)),
+        },
+        rotation_risk: parseFloat(rotationRisk.toFixed(1)),
+        rotation_risk_band: riskBand,
+      };
+    });
+
+    const ranked = [...data].sort((a, b) => {
+      if (sort === 'risk') return b.rotation_risk - a.rotation_risk;
+      if (sort === 'minutes') return b.avg_minutes_combined - a.avg_minutes_combined;
+      return b.xpts - a.xpts;
+    });
+
+    res.json({
+      success: true,
+      gameweek,
+      sort,
+      data: limit ? ranked.slice(0, limit) : ranked,
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

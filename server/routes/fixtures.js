@@ -23,15 +23,183 @@ function poissonPMF(lambda, k) {
   return (Math.exp(-lambda) * (lambda ** k)) / factorial;
 }
 
-function getOutcomeProbabilities(homeXg, awayXg, maxGoals = 7) {
-  let homeWin = 0;
-  let draw = 0;
-  let awayWin = 0;
+function weightedBlend(parts = [], fallback = 0) {
+  const valid = parts.filter(
+    p => p && Number.isFinite(p.value) && Number.isFinite(p.weight) && p.weight > 0
+  );
+  if (!valid.length) return fallback;
+  const totalWeight = valid.reduce((sum, p) => sum + p.weight, 0);
+  if (totalWeight <= 0) return fallback;
+  return valid.reduce((sum, p) => sum + (p.value * p.weight), 0) / totalWeight;
+}
+
+function dixonColesTau(homeGoals, awayGoals, lambdaHome, lambdaAway, rho) {
+  if (homeGoals === 0 && awayGoals === 0) return Math.max(0.25, 1 - (lambdaHome * lambdaAway * rho));
+  if (homeGoals === 0 && awayGoals === 1) return Math.max(0.25, 1 + (lambdaHome * rho));
+  if (homeGoals === 1 && awayGoals === 0) return Math.max(0.25, 1 + (lambdaAway * rho));
+  if (homeGoals === 1 && awayGoals === 1) return Math.max(0.25, 1 - rho);
+  return 1;
+}
+
+function buildPoissonScoreMatrix(homeXg, awayXg, maxGoals = 7) {
+  const matrix = [];
+  let total = 0;
 
   for (let h = 0; h <= maxGoals; h++) {
+    matrix[h] = [];
     const pH = poissonPMF(homeXg, h);
     for (let a = 0; a <= maxGoals; a++) {
       const p = pH * poissonPMF(awayXg, a);
+      matrix[h][a] = p;
+      total += p;
+    }
+  }
+
+  if (total <= 0) return matrix;
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      matrix[h][a] = matrix[h][a] / total;
+    }
+  }
+  return matrix;
+}
+
+function buildDixonColesScoreMatrix(homeXg, awayXg, rho = -0.08, maxGoals = 7) {
+  const matrix = [];
+  let total = 0;
+
+  for (let h = 0; h <= maxGoals; h++) {
+    matrix[h] = [];
+    const pH = poissonPMF(homeXg, h);
+    for (let a = 0; a <= maxGoals; a++) {
+      const pA = poissonPMF(awayXg, a);
+      const tau = dixonColesTau(h, a, homeXg, awayXg, rho);
+      const p = pH * pA * tau;
+      matrix[h][a] = p;
+      total += p;
+    }
+  }
+
+  if (total <= 0) return matrix;
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      matrix[h][a] = matrix[h][a] / total;
+    }
+  }
+  return matrix;
+}
+
+function blendScoreMatrices(matrixA = [], matrixB = [], weightA = 0.45, weightB = 0.55) {
+  const maxGoals = Math.min(matrixA.length, matrixB.length) - 1;
+  if (maxGoals < 0) return [];
+  const out = [];
+  let total = 0;
+
+  for (let h = 0; h <= maxGoals; h++) {
+    out[h] = [];
+    for (let a = 0; a <= maxGoals; a++) {
+      const value = weightedBlend(
+        [
+          { value: toNum(matrixA[h]?.[a], 0), weight: weightA },
+          { value: toNum(matrixB[h]?.[a], 0), weight: weightB },
+        ],
+        0
+      );
+      out[h][a] = value;
+      total += value;
+    }
+  }
+
+  if (total <= 0) return out;
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      out[h][a] = out[h][a] / total;
+    }
+  }
+  return out;
+}
+
+function mixScoreMatrices(weightedMatrices = []) {
+  const valid = weightedMatrices.filter(
+    item => item && Array.isArray(item.matrix) && item.matrix.length && Number.isFinite(item.weight) && item.weight > 0
+  );
+  if (!valid.length) return [];
+
+  const maxGoals = Math.min(...valid.map(item => item.matrix.length)) - 1;
+  if (maxGoals < 0) return [];
+
+  const out = [];
+  let total = 0;
+  for (let h = 0; h <= maxGoals; h++) {
+    out[h] = [];
+    for (let a = 0; a <= maxGoals; a++) {
+      let cell = 0;
+      let cellWeight = 0;
+      for (const item of valid) {
+        const value = toNum(item.matrix[h]?.[a], 0);
+        cell += value * item.weight;
+        cellWeight += item.weight;
+      }
+      const mixed = cellWeight > 0 ? (cell / cellWeight) : 0;
+      out[h][a] = mixed;
+      total += mixed;
+    }
+  }
+
+  if (total <= 0) return out;
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      out[h][a] = out[h][a] / total;
+    }
+  }
+  return out;
+}
+
+function buildCalibratedFixtureMatrix(homeXg, awayXg, maxGoals = 7) {
+  const totalLambda = homeXg + awayXg;
+  const baseRho = clamp(-0.08 + ((2.4 - totalLambda) * 0.035), -0.16, -0.02);
+
+  // Over-dispersion layer:
+  // football scorelines are heavier-tailed than a single Poisson/DC fit.
+  const dispersion = clamp(0.10 + ((totalLambda - 2.4) * 0.03), 0.08, 0.16);
+  const scenarios = [
+    { factor: 1 - dispersion, weight: 0.22 },
+    { factor: 1, weight: 0.56 },
+    { factor: 1 + dispersion, weight: 0.22 },
+  ];
+
+  const scenarioMatrices = scenarios.map((s) => {
+    const lambdaHome = clamp(homeXg * s.factor, 0.15, 4.2);
+    const lambdaAway = clamp(awayXg * s.factor, 0.15, 4.0);
+    const rho = clamp(baseRho + ((1 - s.factor) * 0.02), -0.18, -0.01);
+
+    const poisson = buildPoissonScoreMatrix(lambdaHome, lambdaAway, maxGoals);
+    const dixonColes = buildDixonColesScoreMatrix(lambdaHome, lambdaAway, rho, maxGoals);
+    return {
+      matrix: blendScoreMatrices(poisson, dixonColes, 0.45, 0.55),
+      weight: s.weight,
+    };
+  });
+
+  const matrix = mixScoreMatrices(scenarioMatrices);
+  return {
+    matrix,
+    rho: baseRho,
+    poissonWeight: 0.45,
+    dixonColesWeight: 0.55,
+    dispersion: parseFloat(dispersion.toFixed(3)),
+  };
+}
+
+function getOutcomeProbabilities(scoreMatrix = []) {
+  let homeWin = 0;
+  let draw = 0;
+  let awayWin = 0;
+  const maxGoals = scoreMatrix.length - 1;
+
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      const p = toNum(scoreMatrix[h]?.[a], 0);
       if (h > a) homeWin += p;
       else if (h === a) draw += p;
       else awayWin += p;
@@ -48,20 +216,54 @@ function getOutcomeProbabilities(homeXg, awayXg, maxGoals = 7) {
   };
 }
 
-function mostLikelyScoreline(homeXg, awayXg, maxGoals = 6) {
+function mostLikelyScoreline(scoreMatrix = [], maxGoals = 6) {
   let best = { home: 1, away: 1, prob: 0 };
-  for (let h = 0; h <= maxGoals; h++) {
-    const pH = poissonPMF(homeXg, h);
-    for (let a = 0; a <= maxGoals; a++) {
-      const p = pH * poissonPMF(awayXg, a);
+  const maxFromMatrix = scoreMatrix.length - 1;
+  const cutoff = Math.min(maxGoals, maxFromMatrix);
+
+  for (let h = 0; h <= cutoff; h++) {
+    for (let a = 0; a <= cutoff; a++) {
+      const p = toNum(scoreMatrix[h]?.[a], 0);
       if (p > best.prob) best = { home: h, away: a, prob: p };
     }
   }
   return best;
 }
 
-function pickLikelyScorers(players = [], limit = 3) {
+function extractTeamGoalDistribution(scoreMatrix = [], side = 'home') {
+  if (!Array.isArray(scoreMatrix) || !scoreMatrix.length) return [];
+  const maxGoals = scoreMatrix.length - 1;
+  const dist = Array(maxGoals + 1).fill(0);
+
+  for (let h = 0; h <= maxGoals; h++) {
+    for (let a = 0; a <= maxGoals; a++) {
+      const p = toNum(scoreMatrix[h]?.[a], 0);
+      if (side === 'home') dist[h] += p;
+      else dist[a] += p;
+    }
+  }
+
+  const total = dist.reduce((sum, p) => sum + p, 0);
+  if (total <= 0) return dist;
+  return dist.map(p => p / total);
+}
+
+function playerGoalProbFromTeamDistribution(teamGoalDist = [], playerShare = 0) {
+  const share = clamp(playerShare, 0, 0.92);
+  if (!teamGoalDist.length || share <= 0) return 0;
+  let prob = 0;
+  for (let goals = 0; goals < teamGoalDist.length; goals++) {
+    const pGoals = toNum(teamGoalDist[goals], 0);
+    if (pGoals <= 0) continue;
+    const pPlayerScores = 1 - ((1 - share) ** goals);
+    prob += pGoals * pPlayerScores;
+  }
+  return clamp(prob, 0, 0.99);
+}
+
+function pickLikelyScorers(players = [], limit = 3, teamGoalDist = [], teamLambda = null) {
   if (!players.length) return [];
+  const lambda = Math.max(toNum(teamLambda, 0), 0.15);
 
   const ranked = players
     .filter(p => toNum(p.xg_prob, 0) > 0.02)
@@ -69,14 +271,34 @@ function pickLikelyScorers(players = [], limit = 3) {
       const xgProb = toNum(p.xg_prob, 0);
       const minsProb = clamp(toNum(p.mins_prob, 0.6), 0.05, 1);
       const xpts = toNum(p.xpts, 0);
-      const rankScore = (xgProb * 0.78) + (minsProb * 0.15) + ((xpts / 10) * 0.07);
+      const baseGoalProb = clamp(xgProb * minsProb, 0, 0.97);
+      const pos = toNum(p.position, 4);
+      const shareFloor = pos === 4 ? 0.03 : pos === 3 ? 0.02 : pos === 2 ? 0.008 : 0.004;
+      const shareCap = pos === 4 ? 0.75 : pos === 3 ? 0.62 : pos === 2 ? 0.40 : 0.28;
+      const rawShare = baseGoalProb / lambda;
+      const playerShare = clamp(rawShare, shareFloor, shareCap);
+      const dixonGoalProb = teamGoalDist.length
+        ? playerGoalProbFromTeamDistribution(teamGoalDist, playerShare)
+        : baseGoalProb;
+      const goalProbability = clamp(
+        weightedBlend(
+          [
+            { value: baseGoalProb, weight: 0.45 },
+            { value: dixonGoalProb, weight: 0.55 },
+          ],
+          baseGoalProb
+        ),
+        0,
+        0.97
+      );
+      const rankScore = (goalProbability * 0.78) + (minsProb * 0.15) + ((xpts / 10) * 0.07);
       return {
         id: p.id,
         name: p.name,
         position: p.position,
         xg_prob: parseFloat(xgProb.toFixed(3)),
         mins_prob: parseFloat(minsProb.toFixed(3)),
-        goal_probability: parseFloat((xgProb * minsProb).toFixed(3)),
+        goal_probability: parseFloat(goalProbability.toFixed(3)),
         rankScore,
       };
     })
@@ -202,8 +424,12 @@ router.get('/probabilities', async (req, res) => {
 
       const homeXg = estimateTeamGoals(homePlayers, f.difficulty_home, true);
       const awayXg = estimateTeamGoals(awayPlayers, f.difficulty_away, false);
-      const probs = getOutcomeProbabilities(homeXg, awayXg, 7);
-      const scoreline = mostLikelyScoreline(homeXg, awayXg, 6);
+      const calibrated = buildCalibratedFixtureMatrix(homeXg, awayXg, 7);
+      const blendedMatrix = calibrated.matrix;
+      const probs = getOutcomeProbabilities(blendedMatrix);
+      const scoreline = mostLikelyScoreline(blendedMatrix, 6);
+      const homeGoalDist = extractTeamGoalDistribution(blendedMatrix, 'home');
+      const awayGoalDist = extractTeamGoalDistribution(blendedMatrix, 'away');
 
       const winnerPick =
         probs.home_win >= probs.draw && probs.home_win >= probs.away_win
@@ -236,8 +462,14 @@ router.get('/probabilities', async (req, res) => {
           probability: parseFloat(scoreline.prob.toFixed(4)),
         },
         likely_scorers: {
-          home: pickLikelyScorers(homePlayers, 3),
-          away: pickLikelyScorers(awayPlayers, 3),
+          home: pickLikelyScorers(homePlayers, 3, homeGoalDist, homeXg),
+          away: pickLikelyScorers(awayPlayers, 3, awayGoalDist, awayXg),
+        },
+        model: {
+          poisson_weight: calibrated.poissonWeight,
+          dixon_coles_weight: calibrated.dixonColesWeight,
+          rho: parseFloat(calibrated.rho.toFixed(3)),
+          dispersion: calibrated.dispersion,
         },
       };
     });

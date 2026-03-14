@@ -72,7 +72,7 @@ router.get('/', async (_req, res) => {
     const injuries = rows.map(p => ({
       id:         p.id,
       name:       p.name,
-      team:       p.team_name,
+      team:       p.team,
       position:   p.position,
       status:     p.status || 'a',
       chanceNext: p.chance_of_playing_next_round,

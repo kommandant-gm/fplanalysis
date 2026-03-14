@@ -191,12 +191,16 @@ function FixtureProbPanel({ gameweek, fixtures, loading }) {
 
                 {(f?.likely_scorers?.home?.length > 0 || f?.likely_scorers?.away?.length > 0) && (
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {(f.likely_scorers?.home || []).slice(0, 1).map((s) => (
+                    {(f.likely_scorers?.home || [])
+                      .slice(0, Math.max(1, Math.min(3, toNum(f?.likely_scoreline?.home, 1))))
+                      .map((s) => (
                       <span key={`h-${s.id}`} className="text-[10px] px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-600 border border-rose-100">
                         {s.name} {(toNum(s.goal_probability, 0) * 100).toFixed(0)}%
                       </span>
                     ))}
-                    {(f.likely_scorers?.away || []).slice(0, 1).map((s) => (
+                    {(f.likely_scorers?.away || [])
+                      .slice(0, Math.max(1, Math.min(3, toNum(f?.likely_scoreline?.away, 1))))
+                      .map((s) => (
                       <span key={`a-${s.id}`} className="text-[10px] px-1.5 py-0.5 rounded-md bg-cyan-50 text-cyan-600 border border-cyan-100">
                         {s.name} {(toNum(s.goal_probability, 0) * 100).toFixed(0)}%
                       </span>
@@ -486,64 +490,6 @@ function BestByPositionPanel({ players, loading }) {
   );
 }
 
-/* ─── Upcoming Fixtures ──────────────────────────────────── */
-function UpcomingFixturesPanel({ fixtures, loading }) {
-  const { current = [], next = [], currentGW, nextGW } = fixtures;
-  return (
-    <Panel
-      title="Upcoming Fixtures"
-      subtitle="Current and next gameweek schedule"
-      tag="FIXTURE LIST"
-      accent="violet"
-      actions={
-        <div className="flex gap-1.5">
-          {currentGW && (
-            <span className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-gradient-to-r from-sky-500 to-cyan-400 text-white">
-              GW{currentGW}
-            </span>
-          )}
-          {nextGW && (
-            <span className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
-              GW{nextGW}
-            </span>
-          )}
-        </div>
-      }
-    >
-      {loading ? <Skeleton rows={6} /> : (
-        <div className="grid grid-cols-2 divide-x divide-slate-100">
-          {[
-            { key: 'cur', list: current, label: `GW ${currentGW || '—'} · Current` },
-            { key: 'nxt', list: next,    label: `GW ${nextGW   || '—'} · Next`    },
-          ].map(({ key, list, label }) => (
-            <div key={key} className="p-3">
-              <p className="text-[10px] font-black uppercase tracking-[0.13em] text-slate-400 mb-2">{label}</p>
-              <div className="space-y-1.5">
-                {list.map((f) => (
-                  <div key={f.id}
-                    className="rounded-xl border border-slate-100 bg-white px-2.5 py-2 flex items-center justify-between text-[11px] hover:border-slate-200 transition-all">
-                    <div className="flex items-center gap-1.5 min-w-[72px] justify-end">
-                      <span className="font-semibold text-slate-700">{f.home_short}</span>
-                      <FDRBadge fdr={f.difficulty_home} />
-                    </div>
-                    <div className="font-black tracking-wider px-2 text-slate-400">
-                      {f.finished ? <span className="text-slate-800">{f.score_home}–{f.score_away}</span> : 'vs'}
-                    </div>
-                    <div className="flex items-center gap-1.5 min-w-[72px]">
-                      <FDRBadge fdr={f.difficulty_away} />
-                      <span className="font-semibold text-slate-700">{f.away_short}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
 /* ─── Clean Sheet Picks ──────────────────────────────────── */
 function CleanSheetPanel({ players, loading }) {
   const rows = [...players]
@@ -585,6 +531,167 @@ function CleanSheetPanel({ players, loading }) {
 }
 
 /* ─── Trend Chart ────────────────────────────────────────── */
+function RotationRiskPanel({ rows, loading }) {
+  const [teamFilter, setTeamFilter] = useState('ALL');
+  const [positionFilter, setPositionFilter] = useState('ALL');
+  const [riskFilter, setRiskFilter] = useState('ALL');
+  const [query, setQuery] = useState('');
+
+  const teams = useMemo(
+    () => Array.from(new Set((rows || []).map(r => r.team).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [rows]
+  );
+
+  useEffect(() => {
+    if (teamFilter !== 'ALL' && !teams.includes(teamFilter)) setTeamFilter('ALL');
+  }, [teamFilter, teams]);
+
+  const riskBand = (risk) => {
+    if (risk >= 70) return 'HIGH';
+    if (risk >= 45) return 'MID';
+    return 'LOW';
+  };
+
+  const filteredRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (rows || []).filter((p) => {
+      if (teamFilter !== 'ALL' && p.team !== teamFilter) return false;
+      if (positionFilter !== 'ALL' && toNum(p.position, 0) !== Number(positionFilter)) return false;
+      if (riskFilter !== 'ALL' && riskBand(toNum(p.rotation_risk, 0)) !== riskFilter) return false;
+      if (!q) return true;
+      const haystack = `${p.name || ''} ${p.team || ''} ${p.substitution_pattern || ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [rows, teamFilter, positionFilter, riskFilter, query]);
+
+  const riskColor = (risk) => {
+    if (risk >= 70) return 'bg-rose-100 text-rose-700 border border-rose-200';
+    if (risk >= 45) return 'bg-amber-100 text-amber-700 border border-amber-200';
+    return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
+  };
+
+  return (
+    <Panel
+      title="Minutes Played / Rotation Risk"
+      subtitle="Substitution pattern, squad rotation risk and avg minutes from FPL + FotMob"
+      tag="MINUTES RISK"
+      accent="amber"
+      actions={
+        <div className="flex flex-wrap items-center gap-1.5">
+          <select
+            value={teamFilter}
+            onChange={(e) => setTeamFilter(e.target.value)}
+            className="h-8 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white px-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-200"
+          >
+            <option value="ALL">All Teams</option>
+            {teams.map((team) => (
+              <option key={team} value={team}>{team}</option>
+            ))}
+          </select>
+          <select
+            value={positionFilter}
+            onChange={(e) => setPositionFilter(e.target.value)}
+            className="h-8 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white px-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-200"
+          >
+            <option value="ALL">All Pos</option>
+            <option value="1">GKP</option>
+            <option value="2">DEF</option>
+            <option value="3">MID</option>
+            <option value="4">FWD</option>
+          </select>
+          <select
+            value={riskFilter}
+            onChange={(e) => setRiskFilter(e.target.value)}
+            className="h-8 text-[11px] font-semibold rounded-lg border border-slate-200 bg-white px-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-200"
+          >
+            <option value="ALL">All Risk</option>
+            <option value="HIGH">High Risk</option>
+            <option value="MID">Mid Risk</option>
+            <option value="LOW">Low Risk</option>
+          </select>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search player"
+            className="h-8 w-36 text-[11px] rounded-lg border border-slate-200 bg-white px-2 text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-200"
+          />
+        </div>
+      }
+    >
+      {loading ? <Skeleton rows={6} /> : filteredRows.length === 0 ? (
+        <p className="text-xs text-slate-400 text-center py-10">No players match the current team/search filters</p>
+      ) : (
+        <div className="p-3 space-y-2">
+          <p className="text-[10px] text-slate-400 px-1">
+            Showing {filteredRows.length} of {rows.length} players
+          </p>
+          <div className="max-h-[760px] overflow-y-auto pr-1 space-y-2">
+            {filteredRows.map((p, i) => (
+              <article key={p.id} className="leader-row px-3 py-2.5 reveal-up" style={{ animationDelay: `${i * 45}ms` }}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <PosBadge pos={p.position} />
+                      <p className="text-xs font-bold text-slate-800 truncate">{p.name}</p>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{p.team} · {p.substitution_pattern}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <span className={`text-[11px] font-black px-2 py-0.5 rounded-md ${riskColor(toNum(p.rotation_risk, 0))}`}>
+                      {toNum(p.rotation_risk, 0).toFixed(0)} risk
+                    </span>
+                    <p className="text-[10px] text-slate-400 mt-1">{toNum(p.avg_minutes_combined, 0).toFixed(1)} avg mins</p>
+                  </div>
+                </div>
+
+                <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
+                  <div className="rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+                    <p className="text-slate-400">FPL avg</p>
+                    <p className="font-black text-slate-700">{p.avg_minutes_fpl != null ? toNum(p.avg_minutes_fpl, 0).toFixed(1) : '-'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+                    <p className="text-slate-400">FotMob avg</p>
+                    <p className="font-black text-slate-700">{p.avg_minutes_fotmob != null ? toNum(p.avg_minutes_fotmob, 0).toFixed(1) : '-'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-100 bg-white px-2 py-1.5">
+                    <p className="text-slate-400">mins prob</p>
+                    <p className="font-black text-slate-700">{(toNum(p.mins_prob, 0) * 100).toFixed(0)}%</p>
+                  </div>
+                </div>
+
+                <div className="mt-2 space-y-1.5">
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
+                      <span>Start rate</span>
+                      <span>{(toNum(p?.substitution_stats?.start_rate, 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <AnimBar value={toNum(p?.substitution_stats?.start_rate, 0) * 100} max={100} accent="green" delay={i * 35} />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
+                      <span>Sub-on rate</span>
+                      <span>{(toNum(p?.substitution_stats?.sub_on_rate, 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <AnimBar value={toNum(p?.substitution_stats?.sub_on_rate, 0) * 100} max={100} accent="cyan" delay={i * 35} />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
+                      <span>Cameo rate</span>
+                      <span>{(toNum(p?.substitution_stats?.cameo_rate, 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <AnimBar value={toNum(p?.substitution_stats?.cameo_rate, 0) * 100} max={100} accent="amber" delay={i * 35} />
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function TrendPanel({ trend, loading }) {
   if (loading) {
     return (
@@ -827,15 +934,15 @@ export default function Dashboard() {
   const [players,     setPlayers]     = useState([]);
   const [captains,    setCaptains]    = useState([]);
   const [transfers,   setTransfers]   = useState({ data: [], best_by_position: [], gameweeks: [] });
-  const [fixtures,    setFixtures]    = useState({});
   const [fixProbs,    setFixProbs]    = useState([]);
+  const [rotationRows, setRotationRows] = useState([]);
   const [insights,    setInsights]    = useState({ trend: [], players: [], momentum: [] });
 
   const [loading,         setLoading]         = useState(true);
   const [captainLoading,  setCaptainLoading]  = useState(true);
   const [transferLoading, setTransferLoading] = useState(true);
-  const [fixtureLoading,  setFixtureLoading]  = useState(true);
   const [fixProbLoading,  setFixProbLoading]  = useState(true);
+  const [rotationLoading, setRotationLoading] = useState(true);
   const [insightsLoading, setInsightsLoading] = useState(true);
 
   const [error,    setError]    = useState(null);
@@ -848,7 +955,7 @@ export default function Dashboard() {
     const load = async () => {
       setError(null);
       setLoading(true); setCaptainLoading(true); setTransferLoading(true);
-      setFixtureLoading(true); setFixProbLoading(true); setInsightsLoading(true);
+      setFixProbLoading(true); setRotationLoading(true); setInsightsLoading(true);
       try {
         const res = await axios.get('/api/players');
         if (!active) return;
@@ -857,11 +964,11 @@ export default function Dashboard() {
         setGameweek(gw);
         setLoading(false);
 
-        const [capR, trnR, fixR, fpR, insR] = await Promise.allSettled([
+        const [capR, trnR, fpR, rotR, insR] = await Promise.allSettled([
           axios.get(`/api/predictions/captain?gw=${gw}`),
           axios.get('/api/predictions/transfers'),
-          axios.get('/api/fixtures/upcoming'),
           axios.get(`/api/fixtures/probabilities?gw=${gw}`),
+          axios.get(`/api/predictions/rotation-risk?gw=${gw}&sort=xpts`),
           axios.get(`/api/predictions/insights?gw=${gw}`),
         ]);
         if (!active) return;
@@ -879,11 +986,11 @@ export default function Dashboard() {
         } else setTransfers({ data: [], best_by_position: [], gameweeks: [] });
         setTransferLoading(false);
 
-        setFixtures(fixR.status === 'fulfilled' ? (fixR.value.data || {}) : {});
-        setFixtureLoading(false);
-
         setFixProbs(fpR.status === 'fulfilled' ? (fpR.value.data.data || []) : []);
         setFixProbLoading(false);
+
+        setRotationRows(rotR.status === 'fulfilled' ? (rotR.value.data.data || []) : []);
+        setRotationLoading(false);
 
         if (insR.status === 'fulfilled') {
           setInsights({
@@ -896,7 +1003,7 @@ export default function Dashboard() {
       } catch {
         if (!active) return;
         setError('Could not load data. Is the server running?');
-        [setLoading, setCaptainLoading, setTransferLoading, setFixtureLoading, setFixProbLoading, setInsightsLoading]
+        [setLoading, setCaptainLoading, setTransferLoading, setFixProbLoading, setRotationLoading, setInsightsLoading]
           .forEach(fn => fn(false));
       }
     };
@@ -1006,22 +1113,23 @@ export default function Dashboard() {
         <BestByPositionPanel players={players}    loading={loading}         />
       </div>
 
-      {/* ── Upcoming fixtures + Clean sheet ─────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <UpcomingFixturesPanel fixtures={fixtures} loading={fixtureLoading} />
-        <CleanSheetPanel       players={players}   loading={loading}        />
+      {/* ── Clean sheet ─────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-5">
+        <CleanSheetPanel players={players} loading={loading} />
       </div>
 
-      {/* ── Trend chart + Momentum ───────────────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
-        <TrendPanel    trend={insights.trend    || []} loading={insightsLoading} />
-        <MomentumPanel rows={insights.momentum || []}  loading={insightsLoading} />
+      <div className="grid grid-cols-1 gap-5">
+        <RotationRiskPanel rows={rotationRows} loading={rotationLoading} />
       </div>
 
-      {/* ── History compare + Points heatmap ────────────────── */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <HistoryComparePanel players={insights.players || []} loading={insightsLoading} />
-        <HeatmapPanel        players={insights.players || []} loading={insightsLoading} />
+      {/* ── Momentum ─────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-5">
+        <MomentumPanel rows={insights.momentum || []} loading={insightsLoading} />
+      </div>
+
+      {/* ── Points heatmap ───────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-5">
+        <HeatmapPanel players={insights.players || []} loading={insightsLoading} />
       </div>
 
     </div>

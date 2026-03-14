@@ -22,7 +22,7 @@ export default function App() {
             </div>
             <div>
               <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">AI Analysis</p>
-              <p className="font-bold text-slate-900 text-sm -mt-0.5">Future Vision Panel</p>
+              <p className="font-bold text-slate-900 text-sm -mt-0.5">FPL AI Analysis</p>
             </div>
           </div>
 

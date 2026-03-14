@@ -5,7 +5,7 @@ const db      = require('../config/db');
 // GET /api/players?pos=MID&sort=xpts&gw=30
 router.get('/', async (req, res) => {
   try {
-    const { pos, sort = 'xpts', gw } = req.query;
+    const { pos, sort = 'xpts', gw, limit } = req.query;
 
     // Get next GW if not specified
     let gameweek = parseInt(gw);
@@ -18,6 +18,11 @@ router.get('/', async (req, res) => {
 
     const posMap = { GKP: 1, DEF: 2, MID: 3, FWD: 4 };
     const posFilter = pos && posMap[pos] ? `AND p.position = ${posMap[pos]}` : '';
+    const parsedLimit = Number.parseInt(limit, 10);
+    const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, 1000)
+      : null;
+    const limitClause = safeLimit ? `LIMIT ${safeLimit}` : '';
 
     const sortCol = sort === 'form' ? 'p.form' : 'pr.xpts';
 
@@ -40,7 +45,7 @@ router.get('/', async (req, res) => {
       LEFT JOIN predictions pr ON p.id = pr.player_id AND pr.gameweek = ?
       WHERE 1=1 ${posFilter}
       ORDER BY ${sortCol} DESC
-      LIMIT 50
+      ${limitClause}
     `, [gameweek]);
 
     res.json({ success: true, gameweek, data: players });

@@ -65,7 +65,7 @@ export default function NewsSidebar() {
 
   useEffect(() => {
     fetchNews();
-    const interval = setInterval(fetchNews, 10 * 60 * 1000); // refresh every 10 min
+    const interval = setInterval(fetchNews, 15 * 60 * 1000); // refresh every 15 min
     return () => clearInterval(interval);
   }, []);
 

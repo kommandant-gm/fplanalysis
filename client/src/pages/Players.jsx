@@ -59,8 +59,10 @@ export default function Players() {
       <div className="futura-panel overflow-hidden reveal-up delay-1">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-slate-100 bg-gradient-to-r from-sky-50/70 to-white">
           <div>
-            <h2 className="text-sm font-bold text-slate-800">Top 50 Players</h2>
-            <p className="text-xs text-slate-500 mt-1">Sorted by expected points and role signal</p>
+            <h2 className="text-sm font-bold text-slate-800">
+              {loading ? 'Player Projections' : `${players.length} Player Projections`}
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">Sorted by xPts, with likely and ceiling points</p>
           </div>
           <div className="flex gap-1 bg-sky-50 p-1 rounded-lg border border-sky-100">
             {POSITIONS.map((pos) => (
@@ -90,7 +92,7 @@ export default function Players() {
                 <th className="text-right px-5 py-3 text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Form</th>
                 <th className="text-center px-5 py-3 text-[11px] text-slate-500 font-semibold uppercase tracking-wide">FDR</th>
                 <th className="text-right px-5 py-3 text-[11px] text-slate-500 font-semibold uppercase tracking-wide">xPts</th>
-                <th className="text-right px-5 py-3 text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Pred</th>
+                <th className="text-right px-5 py-3 text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Pred / Ceiling</th>
                 <th className="px-5 py-3" />
               </tr>
             </thead>
@@ -124,17 +126,18 @@ export default function Players() {
                         {POS_LABEL[p.position]}
                       </span>
                     </td>
-                    <td className="px-5 py-3.5 text-right text-sm text-slate-700">£{parseFloat(p.price).toFixed(1)}m</td>
+                    <td className="px-5 py-3.5 text-right text-sm text-slate-700">GBP {parseFloat(p.price).toFixed(1)}m</td>
                     <td className="px-5 py-3.5 text-right text-sm text-slate-700">{parseFloat(p.form).toFixed(1)}</td>
                     <td className="px-5 py-3.5 text-center">
                       <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${FDR_PILL[p.fdr] || 'bg-slate-200 text-slate-600'}`}>
                         {p.fdr}
                       </span>
                     </td>
-                    <td className="px-5 py-3.5 text-right text-xs text-slate-500">{p.xpts ?? '-'}</td>
+                    <td className="px-5 py-3.5 text-right text-xs text-slate-500">{p.xpts != null ? parseFloat(p.xpts).toFixed(2) : '-'}</td>
                     <td className="px-5 py-3.5 text-right">
                       <span className="text-xl font-black text-sky-600">{p.likely_pts ?? '-'}</span>
                       <span className="text-xs text-slate-500 ml-1">pts</span>
+                      <p className="text-[10px] text-slate-400 mt-0.5">ceil {p.max_pts ?? '-'}</p>
                     </td>
                     <td className="px-5 py-3.5 text-right">
                       <Link
@@ -154,3 +157,4 @@ export default function Players() {
     </div>
   );
 }
+
