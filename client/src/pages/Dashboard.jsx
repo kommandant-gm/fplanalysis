@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 
 /* ─── Constants ─────────────────────────────────────────── */
@@ -43,14 +43,14 @@ function FDRBadge({ fdr }) {
   );
 }
 
-function AnimBar({ value, max = 100, accent = 'cyan' }) {
+function AnimBar({ value, max = 100, accent = 'cyan', animate = true }) {
   const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0;
   const a = ACCENTS[accent] || ACCENTS.cyan;
   return (
     <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
       <div
         className={`h-1.5 rounded-full bg-gradient-to-r ${a.bar} glow-line`}
-        style={{ width: `${pct}%`, transition: 'width 400ms ease-out' }}
+        style={{ width: `${pct}%`, transition: animate ? 'width 400ms ease-out' : 'none' }}
       />
     </div>
   );
@@ -529,7 +529,10 @@ function RotationRiskPanel({ rows, loading }) {
   const [positionFilter, setPositionFilter] = useState('ALL');
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [query, setQuery] = useState('');
-  const [visibleCount, setVisibleCount] = useState(60);
+  const deferredQuery = useDeferredValue(query);
+  const listRef = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(760);
 
   const teams = useMemo(
     () => Array.from(new Set((rows || []).map(r => r.team).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
@@ -547,7 +550,7 @@ function RotationRiskPanel({ rows, loading }) {
   };
 
   const filteredRows = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = deferredQuery.trim().toLowerCase();
     return (rows || []).filter((p) => {
       if (teamFilter !== 'ALL' && p.team !== teamFilter) return false;
       if (positionFilter !== 'ALL' && toNum(p.position, 0) !== Number(positionFilter)) return false;
@@ -556,16 +559,32 @@ function RotationRiskPanel({ rows, loading }) {
       const haystack = `${p.name || ''} ${p.team || ''} ${p.substitution_pattern || ''}`.toLowerCase();
       return haystack.includes(q);
     });
-  }, [rows, teamFilter, positionFilter, riskFilter, query]);
+  }, [rows, teamFilter, positionFilter, riskFilter, deferredQuery]);
 
   useEffect(() => {
-    setVisibleCount(60);
-  }, [teamFilter, positionFilter, riskFilter, query, rows]);
+    setScrollTop(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [teamFilter, positionFilter, riskFilter, query]);
 
-  const visibleRows = useMemo(
-    () => filteredRows.slice(0, visibleCount),
-    [filteredRows, visibleCount]
+  useEffect(() => {
+    const updateViewport = () => {
+      if (listRef.current) setViewportHeight(listRef.current.clientHeight || 760);
+    };
+    updateViewport();
+    window.addEventListener('resize', updateViewport);
+    return () => window.removeEventListener('resize', updateViewport);
+  }, []);
+
+  const ROW_HEIGHT = 220;
+  const OVERSCAN = 5;
+  const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const endIdx = Math.min(
+    filteredRows.length,
+    Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN
   );
+  const virtualRows = filteredRows.slice(startIdx, endIdx);
+  const padTop = startIdx * ROW_HEIGHT;
+  const padBottom = Math.max(0, (filteredRows.length - endIdx) * ROW_HEIGHT);
 
   const riskColor = (risk) => {
     if (risk >= 70) return 'bg-rose-100 text-rose-700 border border-rose-200';
@@ -627,11 +646,17 @@ function RotationRiskPanel({ rows, loading }) {
       ) : (
         <div className="p-3 space-y-2">
           <p className="text-[10px] text-slate-400 px-1">
-            Showing {visibleRows.length} of {filteredRows.length} filtered ({rows.length} total)
+            Showing {filteredRows.length} filtered ({rows.length} total)
           </p>
-          <div className="max-h-[760px] overflow-y-auto pr-1 space-y-2">
-            {visibleRows.map((p, i) => (
-              <article key={p.id} className="leader-row px-3 py-2.5 reveal-up" style={{ animationDelay: `${i * 45}ms` }}>
+          <div
+            ref={listRef}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            className="max-h-[760px] overflow-y-auto pr-1"
+          >
+            <div className="space-y-2" style={{ paddingTop: padTop, paddingBottom: padBottom }}>
+            {virtualRows.map((p, idx) => {
+              return (
+              <article key={p.id} className="leader-row px-3 py-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5">
@@ -669,35 +694,27 @@ function RotationRiskPanel({ rows, loading }) {
                       <span>Start rate</span>
                       <span>{(toNum(p?.substitution_stats?.start_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.start_rate, 0) * 100} max={100} accent="green" />
+                    <AnimBar value={toNum(p?.substitution_stats?.start_rate, 0) * 100} max={100} accent="green" animate={false} />
                   </div>
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
                       <span>Sub-on rate</span>
                       <span>{(toNum(p?.substitution_stats?.sub_on_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.sub_on_rate, 0) * 100} max={100} accent="cyan" />
+                    <AnimBar value={toNum(p?.substitution_stats?.sub_on_rate, 0) * 100} max={100} accent="cyan" animate={false} />
                   </div>
                   <div>
                     <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
                       <span>Cameo rate</span>
                       <span>{(toNum(p?.substitution_stats?.cameo_rate, 0) * 100).toFixed(0)}%</span>
                     </div>
-                    <AnimBar value={toNum(p?.substitution_stats?.cameo_rate, 0) * 100} max={100} accent="amber" />
+                    <AnimBar value={toNum(p?.substitution_stats?.cameo_rate, 0) * 100} max={100} accent="amber" animate={false} />
                   </div>
                 </div>
               </article>
-            ))}
-            {visibleCount < filteredRows.length && (
-              <div className="pt-1">
-                <button
-                  onClick={() => setVisibleCount((v) => Math.min(v + 60, filteredRows.length))}
-                  className="w-full text-xs font-semibold rounded-lg border border-slate-200 bg-white px-3 py-2 text-slate-600 hover:text-slate-800 hover:border-slate-300 transition-colors"
-                >
-                  Load more ({filteredRows.length - visibleCount} remaining)
-                </button>
-              </div>
-            )}
+            );
+            })}
+            </div>
           </div>
         </div>
       )}
