@@ -8,7 +8,7 @@ const { createResponseCache } = require('./middleware/responseCache');
 
 // Add new columns to existing tables without requiring a full DB reset
 async function runMigrations() {
-  const dbName = process.env.DB_NAME || process.env.MYSQLDATABASE || 'fpl_analysis';
+  const dbName = process.env.MYSQLDATABASE || process.env.DB_NAME || 'fpl_analysis';
 
   async function addColumnIfMissing(table, column, definition) {
     const [rows] = await db.execute(
