@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const { syncFPLData, syncAvailabilityData } = require('./services/fplFetcher');
 const db = require('./config/db');
 const { createResponseCache } = require('./middleware/responseCache');
+const { requireAdmin } = require('./middleware/adminAuth');
 
 // Add new columns to existing tables without requiring a full DB reset
 async function runMigrations() {
@@ -185,10 +186,25 @@ const predictionsRoute = require('./routes/predictions');
 const fixturesRoute    = require('./routes/fixtures');
 const newsRoute        = require('./routes/news');
 const analyticsRoute   = require('./routes/analytics');
+const adminRoute       = require('./routes/admin');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const enforceHsts = process.env.NODE_ENV === 'production' || process.env.ENABLE_HSTS === 'true';
+const parsedCorsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+const devCorsOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+];
+const allowedCorsOrigins =
+  parsedCorsOrigins.length > 0
+    ? parsedCorsOrigins
+    : (process.env.NODE_ENV === 'production' ? [] : devCorsOrigins);
 const apiCache = createResponseCache(
   parseInt(process.env.API_CACHE_TTL_MS, 10) || 45_000,
   parseInt(process.env.API_CACHE_MAX_ENTRIES, 10) || 900
@@ -258,7 +274,17 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    // Non-browser clients (curl/postman/cron) may not send origin.
+    if (!origin) return callback(null, true);
+    if (allowedCorsOrigins.includes('*')) return callback(null, true);
+    if (allowedCorsOrigins.includes(origin)) return callback(null, true);
+    return callback(null, false);
+  },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 app.use(express.json());
 
 // Routes
@@ -267,6 +293,7 @@ app.use('/api/predictions', apiCache, predictionsRoute);
 app.use('/api/fixtures', apiCache, fixturesRoute);
 app.use('/api/news', apiCache, newsRoute);
 app.use('/api/analytics', analyticsRoute);
+app.use('/api/admin', adminRoute);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -274,7 +301,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Manual sync trigger
-app.post('/api/sync', async (_req, res) => {
+app.post('/api/sync', requireAdmin, async (_req, res) => {
   try {
     const result = await runSync('full');
     if (result.skipped) return res.status(409).json({ success: false, ...result });
@@ -306,7 +333,7 @@ cron.schedule('10 */3 * * *', async () => {
   }
 }, cronOptions);
 
-app.post('/api/sync/light', async (_req, res) => {
+app.post('/api/sync/light', requireAdmin, async (_req, res) => {
   try {
     const result = await runSync('light');
     if (result.skipped) return res.status(409).json({ success: false, ...result });
@@ -316,7 +343,7 @@ app.post('/api/sync/light', async (_req, res) => {
   }
 });
 
-app.get('/api/sync/status', (_req, res) => {
+app.get('/api/sync/status', requireAdmin, (_req, res) => {
   res.json({
     success: true,
     sync: syncState,

@@ -3,18 +3,17 @@ import Dashboard from './pages/Dashboard';
 import Players from './pages/Players';
 import PlayerDetail from './pages/PlayerDetail';
 import Fixtures from './pages/Fixtures';
-import ManualSync from './pages/ManualSync';
-import AnalyticsLive from './pages/AnalyticsLive';
+import AdminLogin from './pages/AdminLogin';
+import AdminPanel from './pages/AdminPanel';
 import NewsSidebar from './components/NewsSidebar';
 import AnalyticsTracker from './components/AnalyticsTracker';
+import RequireAdmin from './components/RequireAdmin';
 
 const NAV = [
   { to: '/',           label: 'Overview'   },
   { to: '/fixtures',   label: 'Fixtures'   },
   { to: '/players',    label: 'Players'    },
 ];
-const PRIVATE_SYNC_ROUTE = '/__sync-fpl-47a9';
-const PRIVATE_ANALYTICS_ROUTE = '/__traffic-live-88a2';
 
 export default function App() {
   return (
@@ -68,8 +67,8 @@ export default function App() {
             <Route path="/fixtures"       element={<Fixtures />}     />
             <Route path="/players"        element={<Players />}      />
             <Route path="/players/:id"    element={<PlayerDetail />} />
-            <Route path={PRIVATE_SYNC_ROUTE} element={<ManualSync />} />
-            <Route path={PRIVATE_ANALYTICS_ROUTE} element={<AnalyticsLive />} />
+            <Route path="/admin/login"    element={<AdminLogin />} />
+            <Route path="/admin"          element={<RequireAdmin><AdminPanel /></RequireAdmin>} />
           </Routes>
         </main>
       </div>

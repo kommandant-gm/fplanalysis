@@ -26,7 +26,7 @@ export default function ManualSync() {
       <header className="px-5 pt-4 pb-3 border-b border-slate-100">
         <h1 className="text-lg font-black text-slate-900">Manual Sync Control</h1>
         <p className="text-xs text-slate-500 mt-1">
-          Use this hidden page to trigger FPL sync manually.
+          Trigger a full FPL sync from the admin panel.
         </p>
       </header>
 

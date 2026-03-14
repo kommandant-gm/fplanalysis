@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
+const { requireAdmin } = require('../middleware/adminAuth');
 
 function normalizeText(value, max = 255) {
   if (typeof value !== 'string') return null;
@@ -100,7 +101,7 @@ router.post('/heartbeat', async (req, res) => {
 });
 
 // GET /api/analytics/summary
-router.get('/summary', async (_req, res) => {
+router.get('/summary', requireAdmin, async (_req, res) => {
   try {
     const parsedWindow = Number.parseInt(process.env.ANALYTICS_ACTIVE_WINDOW_SECONDS, 10);
     const activeWindowSec = Number.isFinite(parsedWindow)
