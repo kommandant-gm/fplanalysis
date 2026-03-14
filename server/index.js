@@ -23,6 +23,67 @@ async function runMigrations() {
     }
   }
 
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS teams (
+      id          INT PRIMARY KEY,
+      name        VARCHAR(100) NOT NULL,
+      short_name  VARCHAR(10)  NOT NULL
+    )`
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS players (
+      id                  INT PRIMARY KEY,
+      name                VARCHAR(150) NOT NULL,
+      team_id             INT NOT NULL,
+      position            TINYINT NOT NULL,
+      price               DECIMAL(4,1) NOT NULL,
+      total_points        INT DEFAULT 0,
+      form                DECIMAL(4,1) DEFAULT 0,
+      minutes             INT DEFAULT 0,
+      goals_scored        INT DEFAULT 0,
+      assists             INT DEFAULT 0,
+      clean_sheets        INT DEFAULT 0,
+      selected_by_percent DECIMAL(5,1) DEFAULT 0,
+      updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    )`
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS fixtures (
+      id               INT PRIMARY KEY,
+      gameweek         INT NOT NULL,
+      team_home_id     INT NOT NULL,
+      team_away_id     INT NOT NULL,
+      difficulty_home  TINYINT DEFAULT 3,
+      difficulty_away  TINYINT DEFAULT 3,
+      FOREIGN KEY (team_home_id) REFERENCES teams(id),
+      FOREIGN KEY (team_away_id) REFERENCES teams(id)
+    )`
+  );
+
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS predictions (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      player_id   INT NOT NULL,
+      gameweek    INT NOT NULL,
+      xpts        DECIMAL(5,2) DEFAULT 0,
+      likely_pts  INT DEFAULT 0,
+      min_pts     INT DEFAULT 0,
+      max_pts     INT DEFAULT 0,
+      xg_prob     DECIMAL(4,3) DEFAULT 0,
+      xa_prob     DECIMAL(4,3) DEFAULT 0,
+      cs_prob     DECIMAL(4,3) DEFAULT 0,
+      mins_prob   DECIMAL(4,3) DEFAULT 0,
+      avg_bonus   DECIMAL(4,2) DEFAULT 0,
+      fdr         TINYINT DEFAULT 3,
+      created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY  uniq_player_gw (player_id, gameweek),
+      FOREIGN KEY (player_id) REFERENCES players(id)
+    )`
+  );
+
   await addColumnIfMissing('players', 'xg', 'DECIMAL(5,3) DEFAULT NULL');
   await addColumnIfMissing('players', 'xa', 'DECIMAL(5,3) DEFAULT NULL');
   await addColumnIfMissing('players', 'fotmob_id', 'INT DEFAULT NULL');
