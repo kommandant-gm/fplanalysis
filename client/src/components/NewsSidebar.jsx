@@ -23,6 +23,7 @@ function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   if (isNaN(diff)) return '';
   const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
@@ -90,7 +91,7 @@ export default function NewsSidebar() {
           flex-shrink-0 transition-all duration-300 ease-in-out
           ${open ? 'w-72' : 'w-0 lg:w-10'}
           hidden lg:flex flex-col
-          sticky top-14 h-[calc(100vh-3.5rem)]
+          sticky top-16 h-[calc(100vh-4rem)]
           border-r border-slate-200 bg-white/95 backdrop-blur-sm overflow-hidden
         `}
         style={{ zIndex: 20 }}
@@ -112,34 +113,40 @@ export default function NewsSidebar() {
         {open && (
           <div className="flex flex-col h-full w-72 overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between px-3.5 py-3 border-b border-slate-100 flex-shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-lg flex items-center justify-center"
-                  style={{ background: 'linear-gradient(135deg,#0d7dff,#00b8f0)' }}>
-                  <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round"
-                      d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z" />
-                  </svg>
+            <div className="px-3.5 py-3 border-b border-slate-100 flex-shrink-0">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex items-start gap-2">
+                  <div className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'linear-gradient(135deg,#0d7dff,#00b8f0)' }}>
+                    <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round"
+                        d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <span className="text-xs font-black text-slate-800">FPL News</span>
+                    {lastUpdate && (
+                      <p className="text-[10px] text-slate-400 leading-tight mt-0.5">
+                        Updated {timeAgo(lastUpdate)}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <span className="text-xs font-black text-slate-800">FPL News</span>
-                {lastUpdate && (
-                  <span className="text-[9px] text-slate-400">{timeAgo(lastUpdate)}</span>
-                )}
-              </div>
-              <div className="flex items-center gap-1">
-                <button onClick={fetchNews} title="Refresh"
-                  className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round"
-                      d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-                  </svg>
-                </button>
-                <button onClick={() => setOpen(false)} title="Collapse"
-                  className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={fetchNews} title="Refresh"
+                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition-all">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round"
+                        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+                    </svg>
+                  </button>
+                  <button onClick={() => setOpen(false)} title="Collapse"
+                    className="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-all">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
 

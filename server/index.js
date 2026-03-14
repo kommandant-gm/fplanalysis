@@ -152,6 +152,7 @@ const newsRoute        = require('./routes/news');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const enforceHsts = process.env.NODE_ENV === 'production' || process.env.ENABLE_HSTS === 'true';
 const apiCache = createResponseCache(
   parseInt(process.env.API_CACHE_TTL_MS, 10) || 45_000,
   parseInt(process.env.API_CACHE_MAX_ENTRIES, 10) || 900
@@ -199,6 +200,27 @@ async function runSync(mode = 'full') {
     syncState.lastFinishedAt = new Date().toISOString();
   }
 }
+
+app.disable('x-powered-by');
+
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+  );
+
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const isHttps = req.secure || (typeof forwardedProto === 'string' && forwardedProto.includes('https'));
+  if (enforceHsts && isHttps) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+
+  next();
+});
 
 app.use(cors());
 app.use(express.json());
