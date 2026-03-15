@@ -33,10 +33,16 @@ async function getFotmob(paths, params = {}) {
         return data;
       } catch (err) {
         lastErr = err;
+        const status = err?.response?.status;
+        const detail = status ? `HTTP ${status}` : (err?.code || err?.message || 'unknown');
+        console.error(`[FotMob] ${url} → ${detail}`);
       }
     }
   }
-  throw new Error(`FotMob request failed for ${pathList.join(',')}: ${lastErr?.message || 'unknown'}`);
+  const errDetail = lastErr?.response?.status
+    ? `HTTP ${lastErr.response.status}`
+    : (lastErr?.code || lastErr?.message || 'unknown');
+  throw new Error(`FotMob request failed for ${pathList.join(',')}: ${errDetail}`);
 }
 
 function parseStat(val) {
