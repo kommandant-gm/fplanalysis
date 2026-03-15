@@ -275,7 +275,13 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    [
+      "default-src 'none'",
+      "img-src 'self' data: blob: https://images.fotmob.com https://a.espncdn.com https://resources.premierleague.com",
+      "frame-ancestors 'none'",
+      "base-uri 'none'",
+      "form-action 'none'",
+    ].join('; ')
   );
 
   const forwardedProto = req.headers['x-forwarded-proto'];
