@@ -2,6 +2,7 @@ const axios = require('axios');
 const db = require('../config/db');
 const { syncFotMobData } = require('./fotmobScraper');
 const { buildMinutesRotationProfile } = require('./minutesRotationModel');
+const { computeAndStoreElo, getEloMap, eloToLambdaMult, eloToCsProb, HOME_ADV } = require('./eloRatings');
 
 const FPL_BASE = 'https://fantasy.premierleague.com/api';
 const HISTORY_WINDOW = 38;
@@ -273,9 +274,9 @@ async function syncAvailabilityData() {
 
   for (const team of teams) {
     await db.execute(
-      `INSERT INTO teams (id, name, short_name) VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE name=VALUES(name), short_name=VALUES(short_name)`,
-      [team.id, team.name, team.short_name]
+      `INSERT INTO teams (id, name, short_name, code) VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), short_name=VALUES(short_name), code=VALUES(code)`,
+      [team.id, team.name, team.short_name, team.code ?? null]
     );
   }
 
@@ -708,7 +709,7 @@ function getOpponentHistoryFeatures(rows, opponentTeamId, upcomingWasHome = null
   };
 }
 
-async function buildFixtureGoalModels(fixtures = []) {
+async function buildFixtureGoalModels(fixtures = [], eloMap = {}) {
   const byTeamGw = {};
   if (!fixtures.length) return byTeamGw;
 
@@ -829,13 +830,23 @@ async function buildFixtureGoalModels(fixtures = []) {
     const homeFdrAdj = clamp(1 + ((3 - homeFdr) * 0.12), 0.72, 1.32);
     const awayFdrAdj = clamp(1 + ((3 - awayFdr) * 0.12), 0.72, 1.32);
 
+    const homeElo = eloMap[homeId] ?? 1000;
+    const awayElo = eloMap[awayId] ?? 1000;
+    const homeEloGap = (homeElo + HOME_ADV) - awayElo;
+    const awayEloGap = awayElo - (homeElo + HOME_ADV);
+    const homeEloMult = eloToLambdaMult(homeEloGap);
+    const awayEloMult = eloToLambdaMult(awayEloGap);
+    // Blend Elo (65%) with FDR (35%) for attack rate multiplier
+    const homeAttackAdj = homeEloMult * 0.65 + homeFdrAdj * 0.35;
+    const awayAttackAdj = awayEloMult * 0.65 + awayFdrAdj * 0.35;
+
     const lambdaHome = clamp(
-      leagueHomeAvg * h.homeAttack * a.awayDefenseWeak * homeFdrAdj,
+      leagueHomeAvg * h.homeAttack * a.awayDefenseWeak * homeAttackAdj,
       0.20,
       3.60
     );
     const lambdaAway = clamp(
-      leagueAwayAvg * a.awayAttack * h.homeDefenseWeak * awayFdrAdj,
+      leagueAwayAvg * a.awayAttack * h.homeDefenseWeak * awayAttackAdj,
       0.20,
       3.30
     );
@@ -896,9 +907,9 @@ async function syncFPLData() {
   // Upsert teams
   for (const team of teams) {
     await db.execute(
-      `INSERT INTO teams (id, name, short_name) VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE name=VALUES(name), short_name=VALUES(short_name)`,
-      [team.id, team.name, team.short_name]
+      `INSERT INTO teams (id, name, short_name, code) VALUES (?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name=VALUES(name), short_name=VALUES(short_name), code=VALUES(code)`,
+      [team.id, team.name, team.short_name, team.code ?? null]
     );
   }
 
@@ -990,17 +1001,21 @@ async function syncFPLData() {
   console.log('[FPL] Fetching FotMob xG/xA and form context...');
   await syncFotMobData();
 
+  console.log('[FPL] Computing Elo ratings...');
+  await computeAndStoreElo();
+  const eloMap = await getEloMap();
+
   console.log('[FPL] Running enhanced prediction engine...');
-  await runPredictionEngine(nextGW, allPlayers, relevantFixtures);
+  await runPredictionEngine(nextGW, allPlayers, relevantFixtures, eloMap);
   console.log('[FPL] Predictions updated.');
 }
 
 // Enhanced prediction engine
-async function runPredictionEngine(nextGW, players, fixtures) {
+async function runPredictionEngine(nextGW, players, fixtures, eloMap = {}) {
   const pointsPerGoal = { 1: 6, 2: 6, 3: 5, 4: 4 };
   const pointsPerCS = { 1: 4, 2: 4, 3: 1, 4: 0 };
   const pointsPerAssist = 3;
-  const fixtureGoalModels = await buildFixtureGoalModels(fixtures);
+  const fixtureGoalModels = await buildFixtureGoalModels(fixtures, eloMap);
 
   // Build fixture lookup per team per GW as arrays to support DGW.
   const teamFixturesByGw = {};
@@ -1261,12 +1276,22 @@ async function runPredictionEngine(nextGW, players, fixtures) {
         const vsOpponent = getOpponentHistoryFeatures(playerHistoryRows, opponentTeamId, upcomingWasHome);
         const vsOppWeight = clamp((vsOpponent.sample / 4) * 0.22 + (vsOpponent.venueSample / 2) * 0.10, 0, 0.32);
 
-        const attackMult = fdr <= 2 ? 1.2 : fdr === 3 ? 1.0 : fdr === 4 ? 0.86 : 0.72;
+        const teamElo = eloMap[p.team] ?? 1000;
+        const oppElo  = eloMap[opponentTeamId] ?? 1000;
+        const homeBonus = upcomingWasHome ? HOME_ADV : 0;
+        const eloGap = (teamElo + homeBonus) - oppElo;
+        // Elo-derived fixture multipliers (fall back to FDR if eloMap is empty)
+        const hasElo = Object.keys(eloMap).length > 0;
+        const attackMult = hasElo
+          ? eloToLambdaMult(eloGap)
+          : (fdr <= 2 ? 1.2 : fdr === 3 ? 1.0 : fdr === 4 ? 0.86 : 0.72);
         const opponentFormAdj = vsOpponent.avgPoints != null
           ? clamp(1 + ((vsOpponent.avgPoints - avgPoints6Signal) * 0.012), 0.90, 1.12)
           : 1;
         const attackMultAdj = attackMult * opponentFormAdj;
-        const csFixtureProb = fdr <= 2 ? 0.58 : fdr === 3 ? 0.40 : fdr === 4 ? 0.25 : 0.14;
+        const csFixtureProb = hasElo
+          ? eloToCsProb(eloGap)
+          : (fdr <= 2 ? 0.34 : fdr === 3 ? 0.26 : fdr === 4 ? 0.17 : 0.10);
 
         const minsBaseAdj = vsOpponent.minutesRatio != null
           ? weightedBlend(
@@ -1401,35 +1426,37 @@ async function runPredictionEngine(nextGW, players, fixtures) {
         if (pos === 4) {
           csProb = 0;
         } else if (pos === 3) {
+          // MID: historical rate weighted more heavily than fixture probability
           csProb = clamp(
             weightedBlend(
               [
-                { value: csFixtureProb * 0.44, weight: 0.44 },
-                { value: history.csRate, weight: 0.33 },
-                { value: seasonCSRate, weight: 0.20 },
+                { value: csFixtureProb * 0.30, weight: 0.35 },
+                { value: history.csRate, weight: 0.40 },
+                { value: seasonCSRate, weight: 0.22 },
                 { value: vsOpponent.csRate, weight: vsOppWeight },
               ],
-              csFixtureProb * 0.40
+              csFixtureProb * 0.28
             ),
-            0.04,
-            0.55
+            0.02,
+            0.35
           );
         } else {
+          // GKP/DEF: fixture and history weighted equally
           csProb = clamp(
             weightedBlend(
               [
-                { value: csFixtureProb, weight: 0.58 },
-                { value: history.csRate, weight: 0.23 },
-                { value: seasonCSRate, weight: 0.15 },
+                { value: csFixtureProb, weight: 0.44 },
+                { value: history.csRate, weight: 0.32 },
+                { value: seasonCSRate, weight: 0.18 },
                 { value: vsOpponent.csRate, weight: vsOppWeight },
               ],
               csFixtureProb
             ),
-            0.08,
-            0.78
+            0.05,
+            0.52
           );
         }
-        csProb = clamp(csProb * availabilityMult, 0, 0.85);
+        csProb = clamp(csProb * availabilityMult, 0, 0.52);
 
         const blendedRating = weightedBlend(
           [

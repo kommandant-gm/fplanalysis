@@ -1,7 +1,11 @@
 function createResponseCache(ttlMs = 45_000, maxEntries = 800) {
   const store = new Map();
+  let lastPrune = 0;
 
-  function pruneExpired(now = Date.now()) {
+  // Only prune at most once every 30 seconds instead of on every cache miss
+  function maybePrune(now) {
+    if (now - lastPrune < 30_000) return;
+    lastPrune = now;
     for (const [key, value] of store.entries()) {
       if (value.expiresAt <= now) store.delete(key);
     }
@@ -32,7 +36,7 @@ function createResponseCache(ttlMs = 45_000, maxEntries = 800) {
     }
 
     if (hit) store.delete(key);
-    pruneExpired(now);
+    maybePrune(now);
 
     const originalJson = res.json.bind(res);
     res.json = (body) => {

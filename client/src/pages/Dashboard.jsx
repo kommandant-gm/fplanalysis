@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useDeferredValue, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 
 /* ─── Constants ─────────────────────────────────────────── */
@@ -26,24 +26,24 @@ const ACCENTS = {
 const toNum = (v, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f);
 
 /* ─── Primitives ─────────────────────────────────────────── */
-function PosBadge({ pos }) {
+const PosBadge = memo(function PosBadge({ pos }) {
   const c = POS_COLORS[pos] || { bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200' };
   return (
     <span className={`inline-flex items-center rounded-md text-[10px] px-1.5 py-0.5 font-black border ${c.bg} ${c.text} ${c.border}`}>
       {POS_LABEL[pos] || pos}
     </span>
   );
-}
+});
 
-function FDRBadge({ fdr }) {
+const FDRBadge = memo(function FDRBadge({ fdr }) {
   return (
     <span className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-black ${FDR_COLORS[fdr] || 'bg-slate-200 text-slate-600'}`}>
       {fdr}
     </span>
   );
-}
+});
 
-function AnimBar({ value, max = 100, accent = 'cyan', animate = true }) {
+const AnimBar = memo(function AnimBar({ value, max = 100, accent = 'cyan', animate = true }) {
   const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0;
   const a = ACCENTS[accent] || ACCENTS.cyan;
   return (
@@ -54,7 +54,7 @@ function AnimBar({ value, max = 100, accent = 'cyan', animate = true }) {
       />
     </div>
   );
-}
+});
 
 function Skeleton({ rows = 5 }) {
   return (
@@ -139,11 +139,35 @@ function FixtureProbPanel({ gameweek, fixtures, loading }) {
                 style={{ animationDelay: `${idx * 45}ms` }}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-black text-slate-900 tracking-tight">
-                    {f.home_short} <span className="text-slate-300 font-light">vs</span> {f.away_short}
-                  </p>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {(f.home_code || f.home_team_id) > 0 && (
+                      <img
+                        src={`https://resources.premierleague.com/premierleague/badges/70/t${f.home_code || f.home_team_id}.png`}
+                        alt={f.home_short}
+                        width={20} height={20}
+                        className="object-contain shrink-0"
+                        onError={e => { e.target.style.display = 'none'; }}
+                      />
+                    )}
+                    <span className="text-sm font-black text-slate-900 tracking-tight truncate">
+                      {f.home_short}
+                    </span>
+                    <span className="text-slate-300 font-light text-sm shrink-0">vs</span>
+                    <span className="text-sm font-black text-slate-900 tracking-tight truncate">
+                      {f.away_short}
+                    </span>
+                    {(f.away_code || f.away_team_id) > 0 && (
+                      <img
+                        src={`https://resources.premierleague.com/premierleague/badges/70/t${f.away_code || f.away_team_id}.png`}
+                        alt={f.away_short}
+                        width={20} height={20}
+                        className="object-contain shrink-0"
+                        onError={e => { e.target.style.display = 'none'; }}
+                      />
+                    )}
+                  </div>
                   {fmt(f.kickoff_time) && (
-                    <span className="text-[10px] font-semibold text-slate-400 bg-slate-50 border border-slate-100 px-2 py-0.5 rounded-md whitespace-nowrap">
+                    <span className="text-[10px] font-semibold text-slate-400 bg-slate-50 border border-slate-100 px-2 py-0.5 rounded-md whitespace-nowrap shrink-0">
                       {fmt(f.kickoff_time)}
                     </span>
                   )}
@@ -523,6 +547,19 @@ function CleanSheetPanel({ players, loading }) {
   );
 }
 
+/* ─── Rotation Risk helpers (outside component to avoid recreation) ── */
+function riskBand(risk) {
+  if (risk >= 70) return 'HIGH';
+  if (risk >= 45) return 'MID';
+  return 'LOW';
+}
+
+function riskColor(risk) {
+  if (risk >= 70) return 'bg-rose-100 text-rose-700 border border-rose-200';
+  if (risk >= 45) return 'bg-amber-100 text-amber-700 border border-amber-200';
+  return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
+}
+
 /* ─── Trend Chart ────────────────────────────────────────── */
 function RotationRiskPanel({ rows, loading }) {
   const [teamFilter, setTeamFilter] = useState('ALL');
@@ -530,6 +567,12 @@ function RotationRiskPanel({ rows, loading }) {
   const [riskFilter, setRiskFilter] = useState('ALL');
   const [query, setQuery] = useState('');
   const deferredQuery = useDeferredValue(query);
+  const searchDebounceRef = useRef(null);
+  const handleSearch = useCallback((e) => {
+    const val = e.target.value;
+    clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => setQuery(val), 200);
+  }, []);
   const listRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(760);
@@ -542,12 +585,6 @@ function RotationRiskPanel({ rows, loading }) {
   useEffect(() => {
     if (teamFilter !== 'ALL' && !teams.includes(teamFilter)) setTeamFilter('ALL');
   }, [teamFilter, teams]);
-
-  const riskBand = (risk) => {
-    if (risk >= 70) return 'HIGH';
-    if (risk >= 45) return 'MID';
-    return 'LOW';
-  };
 
   const filteredRows = useMemo(() => {
     const q = deferredQuery.trim().toLowerCase();
@@ -586,11 +623,6 @@ function RotationRiskPanel({ rows, loading }) {
   const padTop = startIdx * ROW_HEIGHT;
   const padBottom = Math.max(0, (filteredRows.length - endIdx) * ROW_HEIGHT);
 
-  const riskColor = (risk) => {
-    if (risk >= 70) return 'bg-rose-100 text-rose-700 border border-rose-200';
-    if (risk >= 45) return 'bg-amber-100 text-amber-700 border border-amber-200';
-    return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
-  };
 
   return (
     <Panel
@@ -633,8 +665,8 @@ function RotationRiskPanel({ rows, loading }) {
           </select>
           <input
             type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            defaultValue=""
+            onChange={handleSearch}
             placeholder="Search player"
             className="h-8 w-36 text-[11px] rounded-lg border border-slate-200 bg-white px-2 text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-200"
           />

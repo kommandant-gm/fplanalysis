@@ -372,8 +372,8 @@ const FIXTURE_SELECT = `
     f.difficulty_home, f.difficulty_away,
     f.kickoff_time, f.finished,
     f.score_home, f.score_away,
-    th.name AS home_team, th.short_name AS home_short,
-    ta.name AS away_team, ta.short_name AS away_short
+    th.name AS home_team, th.short_name AS home_short, th.code AS home_code,
+    ta.name AS away_team, ta.short_name AS away_short, ta.code AS away_code
   FROM fixtures f
   JOIN teams th ON f.team_home_id = th.id
   JOIN teams ta ON f.team_away_id = ta.id
@@ -444,8 +444,12 @@ router.get('/probabilities', async (req, res) => {
         kickoff_time: f.kickoff_time,
         home_team: f.home_team,
         home_short: f.home_short,
+        home_team_id: toNum(f.team_home_id, 0),
+        home_code: toNum(f.home_code, 0) || null,
         away_team: f.away_team,
         away_short: f.away_short,
+        away_team_id: toNum(f.team_away_id, 0),
+        away_code: toNum(f.away_code, 0) || null,
         expected_goals: {
           home: parseFloat(homeXg.toFixed(2)),
           away: parseFloat(awayXg.toFixed(2)),

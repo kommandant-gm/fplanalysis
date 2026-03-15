@@ -20,17 +20,7 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function mean(values = []) {
-  if (!values.length) return 0;
-  return values.reduce((sum, v) => sum + v, 0) / values.length;
-}
 
-function stdDev(values = []) {
-  if (!values.length) return 0;
-  const avg = mean(values);
-  const variance = mean(values.map(v => (v - avg) ** 2));
-  return Math.sqrt(variance);
-}
 
 function parseMaybeJson(raw, fallback = []) {
   if (raw == null) return fallback;
@@ -51,7 +41,9 @@ router.get('/top', async (req, res) => {
     const gameweek = await resolveGameweek(gw);
     const rowLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const posMap = { GKP: 1, DEF: 2, MID: 3, FWD: 4 };
-    const posFilter = pos && posMap[pos] ? `AND p.position = ${posMap[pos]}` : '';
+    const posValue = (pos && posMap[pos]) ? posMap[pos] : null;
+    const posClause = posValue !== null ? 'AND p.position = ?' : '';
+    const topParams = posValue !== null ? [gameweek, posValue, rowLimit] : [gameweek, rowLimit];
 
     const [rows] = await db.execute(`
       SELECT
@@ -62,10 +54,10 @@ router.get('/top', async (req, res) => {
       FROM predictions pr
       JOIN players p ON pr.player_id = p.id
       JOIN teams t ON p.team_id = t.id
-      WHERE pr.gameweek = ? ${posFilter}
+      WHERE pr.gameweek = ? ${posClause}
       ORDER BY pr.xpts DESC
-      LIMIT ${rowLimit}
-    `, [gameweek]);
+      LIMIT ?
+    `, topParams);
 
     res.json({ success: true, gameweek, data: rows });
   } catch (err) {
@@ -98,7 +90,7 @@ router.get('/transfers', async (req, res) => {
       });
     }
 
-    const gwList = gameweeks.join(', ');
+    const gwPlaceholders = gameweeks.map(() => '?').join(', ');
     const [rows] = await db.execute(`
       SELECT
         p.id, p.name, p.price, p.position,
@@ -112,10 +104,10 @@ router.get('/transfers', async (req, res) => {
       FROM predictions pr
       JOIN players p ON pr.player_id = p.id
       JOIN teams t ON p.team_id = t.id
-      WHERE pr.gameweek IN (${gwList})
+      WHERE pr.gameweek IN (${gwPlaceholders})
       GROUP BY p.id, p.name, p.price, p.position, t.short_name
       ORDER BY total_xpts_3gw DESC
-    `);
+    `, gameweeks);
 
     const normalized = rows.map(r => ({
       ...r,
@@ -254,14 +246,14 @@ router.get('/captain', async (req, res) => {
       .map(r => parseInt(r.id, 10))
       .filter(Number.isFinite);
 
-    const idList = playerIds.join(',');
-    const [historyRows] = await db.execute(
+    const idPlaceholders = playerIds.map(() => '?').join(',');
+    const [historyRows] = await db.query(
       `SELECT
          player_id, gameweek, total_points, minutes
        FROM player_gameweek_history
-       WHERE player_id IN (${idList}) AND gameweek < ?
+       WHERE player_id IN (${idPlaceholders}) AND gameweek < ?
        ORDER BY player_id ASC, gameweek DESC`,
-      [gameweek]
+      [...playerIds, gameweek]
     );
 
     const historyByPlayer = {};
@@ -393,13 +385,13 @@ router.get('/rotation-risk', async (req, res) => {
     }
 
     const playerIds = rows.map(r => parseInt(r.id, 10)).filter(Number.isFinite);
-    const idList = playerIds.join(',');
-    const [historyRows] = await db.execute(
+    const idPlaceholders = playerIds.map(() => '?').join(',');
+    const [historyRows] = await db.query(
       `SELECT player_id, gameweek, minutes
        FROM player_gameweek_history
-       WHERE player_id IN (${idList}) AND gameweek < ?
+       WHERE player_id IN (${idPlaceholders}) AND gameweek < ?
        ORDER BY player_id ASC, gameweek DESC`,
-      [gameweek]
+      [...playerIds, gameweek]
     );
 
     const historyByPlayer = {};
@@ -561,17 +553,15 @@ router.get('/insights', async (req, res) => {
       });
     }
 
-    // Use numeric IN list to avoid prepared statement argument mismatch
-    // on some MySQL setups when dynamically expanding placeholders.
-    const idList = playerIds.join(',');
-    const [historyRows] = await db.execute(
+    const insightIdPlaceholders = playerIds.map(() => '?').join(',');
+    const [historyRows] = await db.query(
       `SELECT
          player_id, gameweek, total_points, minutes,
          goals_scored, assists, expected_goals, expected_assists
        FROM player_gameweek_history
-       WHERE player_id IN (${idList}) AND gameweek < ?
+       WHERE player_id IN (${insightIdPlaceholders}) AND gameweek < ?
        ORDER BY player_id ASC, gameweek DESC`,
-      [gameweek]
+      [...playerIds, gameweek]
     );
 
     const historyMap = {};

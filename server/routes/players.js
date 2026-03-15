@@ -17,14 +17,19 @@ router.get('/', async (req, res) => {
     }
 
     const posMap = { GKP: 1, DEF: 2, MID: 3, FWD: 4 };
-    const posFilter = pos && posMap[pos] ? `AND p.position = ${posMap[pos]}` : '';
+    const posValue = (pos && posMap[pos]) ? posMap[pos] : null;
+    const posClause = posValue !== null ? 'AND p.position = ?' : '';
     const parsedLimit = Number.parseInt(limit, 10);
     const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
       ? Math.min(parsedLimit, 1000)
       : null;
-    const limitClause = safeLimit ? `LIMIT ${safeLimit}` : '';
+    const limitClause = safeLimit ? 'LIMIT ?' : '';
 
     const sortCol = sort === 'form' ? 'p.form' : 'pr.xpts';
+
+    const params = [gameweek];
+    if (posValue !== null) params.push(posValue);
+    if (safeLimit) params.push(safeLimit);
 
     const [players] = await db.execute(`
       SELECT
@@ -43,10 +48,10 @@ router.get('/', async (req, res) => {
       FROM players p
       JOIN teams t ON p.team_id = t.id
       LEFT JOIN predictions pr ON p.id = pr.player_id AND pr.gameweek = ?
-      WHERE 1=1 ${posFilter}
+      WHERE 1=1 ${posClause}
       ORDER BY ${sortCol} DESC
       ${limitClause}
-    `, [gameweek]);
+    `, params);
 
     res.json({ success: true, gameweek, data: players });
   } catch (err) {

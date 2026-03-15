@@ -36,7 +36,9 @@ export default function AnalyticsLive() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 15_000);
+    const t = setInterval(() => {
+      if (!document.hidden) load();
+    }, 15_000);
     return () => clearInterval(t);
   }, []);
 

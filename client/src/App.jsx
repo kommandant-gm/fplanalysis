@@ -2,17 +2,17 @@ import { Routes, Route, NavLink } from 'react-router-dom';
 import Dashboard from './pages/Dashboard';
 import Players from './pages/Players';
 import PlayerDetail from './pages/PlayerDetail';
-import Fixtures from './pages/Fixtures';
 import AdminLogin from './pages/AdminLogin';
 import AdminPanel from './pages/AdminPanel';
+import LiveAnalysis from './pages/LiveAnalysis';
 import NewsSidebar from './components/NewsSidebar';
 import AnalyticsTracker from './components/AnalyticsTracker';
 import RequireAdmin from './components/RequireAdmin';
 
 const NAV = [
-  { to: '/',           label: 'Overview'   },
-  { to: '/fixtures',   label: 'Fixtures'   },
-  { to: '/players',    label: 'Players'    },
+  { to: '/',       label: 'Overview'       },
+  { to: '/live',   label: 'Live Analysis'  },
+  { to: '/players', label: 'Players'       },
 ];
 
 export default function App() {
@@ -64,9 +64,9 @@ export default function App() {
           <AnalyticsTracker />
           <Routes>
             <Route path="/"               element={<Dashboard />}    />
-            <Route path="/fixtures"       element={<Fixtures />}     />
             <Route path="/players"        element={<Players />}      />
             <Route path="/players/:id"    element={<PlayerDetail />} />
+            <Route path="/live"           element={<LiveAnalysis />} />
             <Route path="/admin/login"    element={<AdminLogin />} />
             <Route path="/admin"          element={<RequireAdmin><AdminPanel /></RequireAdmin>} />
           </Routes>

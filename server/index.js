@@ -28,9 +28,11 @@ async function runMigrations() {
     `CREATE TABLE IF NOT EXISTS teams (
       id          INT PRIMARY KEY,
       name        VARCHAR(100) NOT NULL,
-      short_name  VARCHAR(10)  NOT NULL
+      short_name  VARCHAR(10)  NOT NULL,
+      code        INT DEFAULT NULL
     )`
   );
+  await addColumnIfMissing('teams', 'code', 'INT DEFAULT NULL');
 
   await db.execute(
     `CREATE TABLE IF NOT EXISTS players (
@@ -178,6 +180,16 @@ async function runMigrations() {
     )`
   );
 
+  await db.execute(
+    `CREATE TABLE IF NOT EXISTS team_elo (
+      team_id    INT PRIMARY KEY,
+      elo        DECIMAL(8,2) NOT NULL DEFAULT 1000.00,
+      games      INT DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id)
+    )`
+  );
+
   console.log('[DB] Migrations complete');
 }
 
@@ -187,6 +199,7 @@ const fixturesRoute    = require('./routes/fixtures');
 const newsRoute        = require('./routes/news');
 const analyticsRoute   = require('./routes/analytics');
 const adminRoute       = require('./routes/admin');
+const liveRoute        = require('./routes/live');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -294,6 +307,7 @@ app.use('/api/fixtures', apiCache, fixturesRoute);
 app.use('/api/news', apiCache, newsRoute);
 app.use('/api/analytics', analyticsRoute);
 app.use('/api/admin', adminRoute);
+app.use('/api/live', liveRoute);
 
 // Health check
 app.get('/api/health', (_req, res) => {

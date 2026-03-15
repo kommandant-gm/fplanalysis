@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 
 const POS_LABEL = { 1: 'GKP', 2: 'DEF', 3: 'MID', 4: 'FWD' };
+const POS_NUM   = { GKP: 1, DEF: 2, MID: 3, FWD: 4 };
 const POS_COLOR = {
   1: 'bg-slate-100 text-slate-700 border border-slate-200',
   2: 'bg-emerald-50 text-emerald-700 border border-emerald-100',
@@ -18,26 +19,69 @@ const FDR_PILL = {
 };
 const POSITIONS = ['ALL', 'GKP', 'DEF', 'MID', 'FWD'];
 
-export default function Players() {
-  const [players, setPlayers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [posFilter, setPosFilter] = useState('ALL');
-  const [gameweek, setGameweek] = useState(null);
+const PlayerRow = memo(function PlayerRow({ p, i }) {
+  return (
+    <tr className="hover:bg-sky-50/40 transition-colors">
+      <td className="px-5 py-3.5 text-xs text-slate-500 font-medium">{i + 1}</td>
+      <td className="px-5 py-3.5">
+        <p className="font-semibold text-slate-900">{p.name}</p>
+        <p className="text-xs text-slate-500">{p.team}</p>
+      </td>
+      <td className="px-5 py-3.5">
+        <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${POS_COLOR[p.position]}`}>
+          {POS_LABEL[p.position]}
+        </span>
+      </td>
+      <td className="px-5 py-3.5 text-right text-sm text-slate-700">GBP {parseFloat(p.price).toFixed(1)}m</td>
+      <td className="px-5 py-3.5 text-right text-sm text-slate-700">{parseFloat(p.form).toFixed(1)}</td>
+      <td className="px-5 py-3.5 text-center">
+        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${FDR_PILL[p.fdr] || 'bg-slate-200 text-slate-600'}`}>
+          {p.fdr}
+        </span>
+      </td>
+      <td className="px-5 py-3.5 text-right text-xs text-slate-500">{p.xpts != null ? parseFloat(p.xpts).toFixed(2) : '-'}</td>
+      <td className="px-5 py-3.5 text-right">
+        <span className="text-xl font-black text-sky-600">{p.likely_pts ?? '-'}</span>
+        <span className="text-xs text-slate-500 ml-1">pts</span>
+        <p className="text-[10px] text-slate-400 mt-0.5">ceil {p.max_pts ?? '-'}</p>
+      </td>
+      <td className="px-5 py-3.5 text-right">
+        <Link
+          to={`/players/${p.id}`}
+          className="text-xs px-3 py-1.5 rounded-lg text-white font-bold bg-gradient-to-r from-[#0a84ff] to-[#00c4ff] shadow-[0_8px_14px_rgba(10,132,255,0.22)] hover:brightness-105 transition-all"
+        >
+          View
+        </Link>
+      </td>
+    </tr>
+  );
+});
 
+export default function Players() {
+  const [allPlayers, setAllPlayers] = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState(null);
+  const [posFilter, setPosFilter]   = useState('ALL');
+  const [gameweek, setGameweek]     = useState(null);
+
+  // Fetch all players once — filter client-side to avoid skeleton on every tab click
   useEffect(() => {
     setLoading(true);
     setError(null);
-
-    const params = posFilter !== 'ALL' ? { pos: posFilter } : {};
-    axios.get('/api/players', { params })
+    axios.get('/api/players')
       .then((res) => {
-        setPlayers(res.data.data || []);
+        setAllPlayers(res.data.data || []);
         setGameweek(res.data.gameweek);
       })
       .catch(() => setError('Could not load players. Is the server running?'))
       .finally(() => setLoading(false));
-  }, [posFilter]);
+  }, []);
+
+  const players = useMemo(() => {
+    if (posFilter === 'ALL') return allPlayers;
+    const posNum = POS_NUM[posFilter];
+    return allPlayers.filter(p => p.position === posNum);
+  }, [allPlayers, posFilter]);
 
   return (
     <div className="space-y-6">
@@ -114,41 +158,7 @@ export default function Players() {
                   </td>
                 </tr>
               ) : (
-                players.map((p, i) => (
-                  <tr key={p.id} className="hover:bg-sky-50/40 transition-colors">
-                    <td className="px-5 py-3.5 text-xs text-slate-500 font-medium">{i + 1}</td>
-                    <td className="px-5 py-3.5">
-                      <p className="font-semibold text-slate-900">{p.name}</p>
-                      <p className="text-xs text-slate-500">{p.team}</p>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <span className={`text-xs px-2 py-0.5 rounded-md font-semibold ${POS_COLOR[p.position]}`}>
-                        {POS_LABEL[p.position]}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-sm text-slate-700">GBP {parseFloat(p.price).toFixed(1)}m</td>
-                    <td className="px-5 py-3.5 text-right text-sm text-slate-700">{parseFloat(p.form).toFixed(1)}</td>
-                    <td className="px-5 py-3.5 text-center">
-                      <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${FDR_PILL[p.fdr] || 'bg-slate-200 text-slate-600'}`}>
-                        {p.fdr}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3.5 text-right text-xs text-slate-500">{p.xpts != null ? parseFloat(p.xpts).toFixed(2) : '-'}</td>
-                    <td className="px-5 py-3.5 text-right">
-                      <span className="text-xl font-black text-sky-600">{p.likely_pts ?? '-'}</span>
-                      <span className="text-xs text-slate-500 ml-1">pts</span>
-                      <p className="text-[10px] text-slate-400 mt-0.5">ceil {p.max_pts ?? '-'}</p>
-                    </td>
-                    <td className="px-5 py-3.5 text-right">
-                      <Link
-                        to={`/players/${p.id}`}
-                        className="text-xs px-3 py-1.5 rounded-lg text-white font-bold bg-gradient-to-r from-[#0a84ff] to-[#00c4ff] shadow-[0_8px_14px_rgba(10,132,255,0.22)] hover:brightness-105 transition-all"
-                      >
-                        View
-                      </Link>
-                    </td>
-                  </tr>
-                ))
+                players.map((p, i) => <PlayerRow key={p.id} p={p} i={i} />)
               )}
             </tbody>
           </table>
@@ -157,4 +167,3 @@ export default function Players() {
     </div>
   );
 }
-

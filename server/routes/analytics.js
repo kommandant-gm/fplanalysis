@@ -117,7 +117,8 @@ router.get('/summary', requireAdmin, async (_req, res) => {
     const [activeRows] = await db.execute(
       `SELECT COUNT(*) AS activeNow
        FROM analytics_sessions
-       WHERE last_seen >= DATE_SUB(NOW(), INTERVAL ${activeWindowSec} SECOND)`
+       WHERE last_seen >= DATE_SUB(NOW(), INTERVAL ? SECOND)`,
+      [activeWindowSec]
     );
     const [pageRows] = await db.execute(
       `SELECT

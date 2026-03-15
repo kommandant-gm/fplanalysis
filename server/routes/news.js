@@ -8,6 +8,8 @@ const router = express.Router();
 /* ── RSS cache (15-minute TTL) ────────────────────────────── */
 let rssCache = { data: [], fetchedAt: 0 };
 const RSS_TTL = 15 * 60 * 1000;
+const DEFAULT_FEED_LIMIT = 60;
+const MAX_FEED_LIMIT = 200;
 
 const RSS_FEEDS = [
   { url: 'https://feeds.bbci.co.uk/sport/football/rss.xml',             source: 'BBC Sport'   },
@@ -54,6 +56,11 @@ async function fetchFeed(url, source) {
 /* ── GET /api/news ────────────────────────────────────────── */
 router.get('/', async (_req, res) => {
   try {
+    const parsedLimit = Number.parseInt(_req.query?.limit, 10);
+    const feedLimit = Number.isFinite(parsedLimit)
+      ? Math.max(1, Math.min(parsedLimit, MAX_FEED_LIMIT))
+      : DEFAULT_FEED_LIMIT;
+
     /* 1 ── FPL injury / availability news from DB */
     const [rows] = await db.execute(`
       SELECT p.id, p.name, t.short_name AS team, p.position, p.status,
@@ -81,8 +88,10 @@ router.get('/', async (_req, res) => {
     }));
 
     /* 2 ── RSS feed (cached) */
-    let feed = rssCache.data;
-    if (Date.now() - rssCache.fetchedAt > RSS_TTL) {
+    let feed = (rssCache.data || []).slice(0, feedLimit);
+    const cacheStale = Date.now() - rssCache.fetchedAt > RSS_TTL;
+    const cacheTooSmall = (rssCache.data || []).length < feedLimit;
+    if (cacheStale || cacheTooSmall) {
       const results = await Promise.allSettled(
         RSS_FEEDS.map(f => fetchFeed(f.url, f.source))
       );
@@ -93,7 +102,7 @@ router.get('/', async (_req, res) => {
         const db_ = b.pubDate ? new Date(b.pubDate).getTime() : 0;
         return db_ - da;
       });
-      feed = all.slice(0, 24);
+      feed = all.slice(0, feedLimit);
       rssCache = { data: feed, fetchedAt: Date.now() };
       console.log(`[News] RSS refreshed: ${feed.length} items`);
     }
